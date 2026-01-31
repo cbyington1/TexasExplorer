@@ -1,0 +1,470 @@
+<div class="map-container">
+  <!-- Left Sidebar - Full Height, Fixed -->
+  <div class="controls">
+    <h1>Texas Explorer</h1>
+
+    <!-- Data Quality Toggle -->
+    <div class="data-quality-toggle">
+      <label class="checkbox-label">
+        <input 
+          type="checkbox" 
+          [checked]="requireCompleteData"
+          (change)="toggleCompleteData()"
+        />
+        <span class="checkmark"></span>
+        Complete data only
+      </label>
+    </div>
+
+    <!-- Search Bar -->
+    <div class="search-section">
+      <label for="citySearch">Search City</label>
+      <input 
+        type="text" 
+        id="citySearch" 
+        placeholder="Search by city name..."
+        [(ngModel)]="searchQuery"
+        (input)="onSearchInput()"
+      />
+      <div class="search-results" *ngIf="searchResults.length > 0">
+        <div 
+          class="search-result-item" 
+          *ngFor="let city of searchResults"
+          (click)="selectSearchResult(city)"
+        >
+          {{ city.name }}
+        </div>
+      </div>
+    </div>
+    
+    <!-- Stats -->
+    <div class="stats-section">
+      <p class="city-count" *ngIf="!loading">
+        <strong>{{ filteredCount }}</strong> cities match filters
+      </p>
+      <p class="loading" *ngIf="loading">Loading cities...</p>
+    </div>
+
+    <!-- Color By Section -->
+    <div class="color-section">
+      <h3>Color By</h3>
+      <select 
+        class="color-select"
+        [ngModel]="colorConfig.metricKey"
+        (ngModelChange)="setColorMetric($event)"
+      >
+        <optgroup *ngFor="let category of filterCategories" [label]="category.label">
+          <option *ngFor="let metric of category.metrics" [value]="metric.key">
+            {{ metric.label }}
+          </option>
+        </optgroup>
+      </select>
+      
+      <div class="color-direction">
+        <button 
+          class="direction-btn"
+          [class.active]="colorConfig.highIsGreen"
+          (click)="colorConfig.highIsGreen = true; addMarkers()"
+        >
+          High is Green
+        </button>
+        <button 
+          class="direction-btn"
+          [class.active]="!colorConfig.highIsGreen"
+          (click)="colorConfig.highIsGreen = false; addMarkers()"
+        >
+          Low is Green
+        </button>
+      </div>
+
+      <!-- Dynamic Color Legend -->
+      <div class="legend" *ngIf="currentColorMetric">
+        <div class="legend-gradient">
+          <div class="gradient-bar" [class.reversed]="!colorConfig.highIsGreen"></div>
+          <div class="gradient-labels">
+            <span>{{ colorConfig.highIsGreen ? getLegendLow() : getLegendHigh() }}</span>
+            <span>{{ getLegendMid() }}</span>
+            <span>{{ colorConfig.highIsGreen ? getLegendHigh() : getLegendLow() }}</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Size By Section -->
+    <div class="size-section">
+      <h3>Size By</h3>
+      <select 
+        class="color-select"
+        [ngModel]="sizeConfig.metricKey"
+        (ngModelChange)="setSizeMetric($event)"
+      >
+        <optgroup *ngFor="let category of filterCategories" [label]="category.label">
+          <option *ngFor="let metric of category.metrics" [value]="metric.key">
+            {{ metric.label }}
+          </option>
+        </optgroup>
+      </select>
+      
+      <div class="color-direction">
+        <button 
+          class="direction-btn"
+          [class.active]="sizeConfig.highIsGreen"
+          (click)="sizeConfig.highIsGreen = true; updateVisibleCities()"
+        >
+          High is Big
+        </button>
+        <button 
+          class="direction-btn"
+          [class.active]="!sizeConfig.highIsGreen"
+          (click)="sizeConfig.highIsGreen = false; updateVisibleCities()"
+        >
+          Low is Big
+        </button>
+      </div>
+
+      <!-- Dynamic Size Legend -->
+      <div class="legend" *ngIf="currentSizeMetric">
+        <div class="size-legend">
+          <div class="size-dots">
+            <span class="size-dot small"></span>
+            <span class="size-dot medium"></span>
+            <span class="size-dot large"></span>
+          </div>
+          <div class="size-labels">
+            <span>{{ sizeConfig.highIsGreen ? getSizeLegendLow() : getSizeLegendHigh() }}</span>
+            <span>{{ sizeConfig.highIsGreen ? getSizeLegendHigh() : getSizeLegendLow() }}</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Filters Section -->
+    <div class="filters-section">
+      <div class="filters-header">
+        <h3>Filters</h3>
+        <button 
+          class="clear-all-btn" 
+          *ngIf="activeFilters.size > 0"
+          (click)="clearAllFilters()"
+        >
+          Clear All ({{ activeFilters.size }})
+        </button>
+      </div>
+
+      <!-- Filter Categories Accordion -->
+      <div class="filter-accordion">
+        <div 
+          class="filter-category" 
+          *ngFor="let category of filterCategories"
+        >
+          <!-- Category Header -->
+          <div 
+            class="category-header" 
+            (click)="toggleCategory(category)"
+            [class.has-active]="getActiveFilterCount(category) > 0"
+          >
+            <span class="category-icon">{{ category.icon }}</span>
+            <span class="category-label">{{ category.label }}</span>
+            <span class="active-badge" *ngIf="getActiveFilterCount(category) > 0">
+              {{ getActiveFilterCount(category) }}
+            </span>
+            <span class="expand-icon">{{ category.expanded ? '−' : '+' }}</span>
+          </div>
+
+          <!-- Category Content (Metrics) -->
+          <div class="category-content" *ngIf="category.expanded">
+            <div 
+              class="filter-metric" 
+              *ngFor="let metric of category.metrics"
+              [class.active]="isFilterActive(metric)"
+            >
+              <div class="metric-header">
+                <span class="metric-label">{{ metric.label }}</span>
+                <button 
+                  class="clear-metric-btn" 
+                  *ngIf="isFilterActive(metric)"
+                  (click)="clearFilter(metric); $event.stopPropagation()"
+                  title="Clear filter"
+                >
+                  ✕
+                </button>
+              </div>
+
+              <!-- Dual Range Slider -->
+              <div class="range-slider-container">
+                <div class="range-inputs">
+                  <input
+                    type="range"
+                    class="range-min"
+                    [min]="metric.min"
+                    [max]="metric.max"
+                    [step]="metric.step"
+                    [value]="getFilterMin(metric)"
+                    (input)="setFilterMin(metric, $any($event.target).valueAsNumber)"
+                  />
+                  <input
+                    type="range"
+                    class="range-max"
+                    [min]="metric.min"
+                    [max]="metric.max"
+                    [step]="metric.step"
+                    [value]="getFilterMax(metric)"
+                    (input)="setFilterMax(metric, $any($event.target).valueAsNumber)"
+                  />
+                </div>
+                <div class="range-track">
+                  <div 
+                    class="range-fill"
+                    [style.left.%]="((getFilterMin(metric) - metric.min) / (metric.max - metric.min)) * 100"
+                    [style.right.%]="100 - ((getFilterMax(metric) - metric.min) / (metric.max - metric.min)) * 100"
+                  ></div>
+                </div>
+              </div>
+
+              <!-- Value Display -->
+              <div class="range-values">
+                <span class="range-value min">{{ formatMetricValue(getFilterMin(metric), metric) }}</span>
+                <span class="range-separator">–</span>
+                <span class="range-value max">{{ formatMetricValue(getFilterMax(metric), metric) }}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Map -->
+  <div id="map" [class.hide-controls]="showListPanel"></div>
+
+  <!-- List Toggle Button -->
+  <button 
+    class="list-toggle-btn" 
+    *ngIf="!showListPanel"
+    (click)="toggleListPanel()" 
+    title="View city list"
+  >
+    <span class="list-icon">☰</span>
+  </button>
+
+  <!-- List Panel Overlay -->
+  <div class="list-panel" *ngIf="showListPanel">
+    <div class="list-panel-header">
+      <h3>City Rankings</h3>
+      <button class="close-list-btn" (click)="showListPanel = false">✕</button>
+    </div>
+    
+    <div class="list-panel-meta">
+      <p><strong>{{ filteredCount }}</strong> cities</p>
+      <p class="sort-info">
+        Sorted by: {{ currentSizeMetric?.label || 'N/A' }} 
+        ({{ sizeConfig.highIsGreen ? 'High→Low' : 'Low→High' }})
+      </p>
+    </div>
+
+    <div class="list-panel-headers">
+      <span class="header-rank">#</span>
+      <span class="header-city">City</span>
+      <span class="header-size">{{ currentSizeMetric?.label || 'Size' }}</span>
+      <span class="header-color">{{ currentColorMetric?.label || 'Color' }}</span>
+    </div>
+
+    <div class="list-panel-content">
+      <div 
+        class="list-item" 
+        *ngFor="let city of sortedCitiesList; let i = index"
+        (click)="selectCityFromList(city)"
+      >
+        <span class="item-rank">{{ i + 1 }}</span>
+        <span class="item-city">
+          <span 
+            class="item-dot" 
+            [style.background]="getColorForCityPublic(city)"
+          ></span>
+          {{ city.name.replace(' city', '').replace(' town', '') }}
+        </span>
+        <span class="item-size">{{ getCityMetricDisplay(city, sizeConfig.metricKey) }}</span>
+        <span class="item-color">{{ getCityMetricDisplay(city, colorConfig.metricKey) }}</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Right Info Panel - Always Visible -->
+  <div class="info-panel">
+    <!-- Default State - Texas Stats -->
+    <div *ngIf="!selectedCity && texasStats">
+      <h2>Texas Cities Average</h2>
+      <p class="year-badge">{{ selectedYear }}</p>
+      <p class="data-note" style="margin-top: 0; border-top: none; padding-top: 0;">
+        Based on {{ formatNumber(texasStats.totalPopulation) }} residents across 1,800+ incorporated cities. 
+        Texas total population: ~30M
+      </p>
+      
+      <div class="info-section">
+        <h3>Overview</h3>
+        <p><strong>Total Population:</strong> {{ formatNumber(texasStats.totalPopulation) }}</p>
+        <p><strong>Median Income:</strong> {{ formatMoney(texasStats.medianHouseholdIncome) }}</p>
+        <p><strong>Per Capita Income:</strong> {{ formatMoney(texasStats.perCapitaIncome) }}</p>
+      </div>
+
+      <div class="info-section">
+        <h3>Demographics</h3>
+        <p><strong>Median Age:</strong> {{ texasStats.medianAge?.toFixed(1) }} years</p>
+        <p><strong>Male:</strong> {{ getPercentage(texasStats.totalMale, texasStats.totalPopulation) }}</p>
+        <p><strong>Female:</strong> {{ getPercentage(texasStats.totalFemale, texasStats.totalPopulation) }}</p>
+      </div>
+
+      <div class="info-section">
+        <h3>Race</h3>
+        <div class="demo-bar">
+          <div class="demo-item">
+            <span class="label">White</span>
+            <span class="value">{{ getPercentage(texasStats.whitePopulation, texasStats.totalPopulation) }}</span>
+          </div>
+          <div class="demo-item">
+            <span class="label">Black</span>
+            <span class="value">{{ getPercentage(texasStats.blackPopulation, texasStats.totalPopulation) }}</span>
+          </div>
+          <div class="demo-item">
+            <span class="label">Asian</span>
+            <span class="value">{{ getPercentage(texasStats.asianPopulation, texasStats.totalPopulation) }}</span>
+          </div>
+          <div class="demo-item">
+            <span class="label">Native American</span>
+            <span class="value">{{ getPercentage(texasStats.nativeAmericanPopulation, texasStats.totalPopulation) }}</span>
+          </div>
+          <div class="demo-item">
+            <span class="label">Pacific Islander</span>
+            <span class="value">{{ getPercentage(texasStats.pacificIslanderPopulation, texasStats.totalPopulation) }}</span>
+          </div>
+          <div class="demo-item">
+            <span class="label">Two or More Races</span>
+            <span class="value">{{ getPercentage(texasStats.twoOrMoreRacesPopulation, texasStats.totalPopulation) }}</span>
+          </div>
+          <div class="demo-item">
+            <span class="label">Other Race</span>
+            <span class="value">{{ getPercentage(texasStats.otherRacePopulation, texasStats.totalPopulation) }}</span>
+          </div>
+        </div>
+        <p class="data-note">* Percentages may not sum to exactly 100% due to U.S. Census Bureau reporting methods</p>
+      </div>
+
+      <div class="info-section">
+        <h3>Ethnicity</h3>
+        <div class="demo-bar">
+          <div class="demo-item">
+            <span class="label">Hispanic/Latino</span>
+            <span class="value">{{ getPercentage(texasStats.hispanicPopulation, texasStats.totalPopulation) }}</span>
+          </div>
+          <div class="demo-item">
+            <span class="label">Non-Hispanic</span>
+            <span class="value">{{ getPercentage(texasStats.totalPopulation - texasStats.hispanicPopulation, texasStats.totalPopulation) }}</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="info-section">
+        <h3>Housing</h3>
+        <p><strong>Median Home Value:</strong> {{ formatMoney(texasStats.medianHomeValue) }}</p>
+        <p><strong>Median Rent:</strong> {{ formatMoney(texasStats.medianRent) }}</p>
+        <p><strong>Homeownership:</strong> {{ getPercentage(texasStats.ownerOccupied, texasStats.ownerOccupied + texasStats.renterOccupied) }}</p>
+      </div>
+
+      <div class="info-section">
+        <h3>Employment</h3>
+        <p><strong>Employed:</strong> {{ formatNumber(texasStats.employed) }}</p>
+        <p><strong>Unemployment Rate:</strong> {{ getPercentage(texasStats.unemployed, texasStats.laborForce) }}</p>
+        <p><strong>Work From Home:</strong> {{ getPercentage(texasStats.workFromHome, texasStats.employed) }}</p>
+      </div>
+    </div>
+
+    <!-- City Selected State -->
+    <div *ngIf="selectedCity">
+      <h2>{{ selectedCity.name.replace(' city', '').replace(' town', '') }}</h2>
+      <p class="year-badge">{{ selectedYear }}</p>
+      
+      <div class="info-section">
+        <h3>Overview</h3>
+        <p><strong>Population:</strong> {{ formatNumber(selectedCity.population) }}</p>
+        <p><strong>Median Income:</strong> {{ formatMoney(selectedCity.medianHouseholdIncome) }}</p>
+        <p><strong>Per Capita Income:</strong> {{ formatMoney(selectedCity.perCapitaIncome) }}</p>
+        <p><strong>Land Area:</strong> {{ selectedCity.landAreaSqMi.toFixed(1) }} sq mi</p>
+      </div>
+
+      <div class="info-section">
+        <h3>Demographics</h3>
+        <p><strong>Median Age:</strong> {{ selectedCity.medianAge.toFixed(1) }} years</p>
+        <p><strong>Male:</strong> {{ getPercentage(selectedCity.malePopulation, selectedCity.population) }}</p>
+        <p><strong>Female:</strong> {{ getPercentage(selectedCity.femalePopulation, selectedCity.population) }}</p>
+      </div>
+
+      <div class="info-section">
+        <h3>Race</h3>
+        <div class="demo-bar">
+          <div class="demo-item" *ngIf="selectedCity.whitePopulation">
+            <span class="label">White</span>
+            <span class="value">{{ getPercentage(selectedCity.whitePopulation, selectedCity.population) }}</span>
+          </div>
+          <div class="demo-item" *ngIf="selectedCity.blackPopulation">
+            <span class="label">Black</span>
+            <span class="value">{{ getPercentage(selectedCity.blackPopulation, selectedCity.population) }}</span>
+          </div>
+          <div class="demo-item" *ngIf="selectedCity.asianPopulation">
+            <span class="label">Asian</span>
+            <span class="value">{{ getPercentage(selectedCity.asianPopulation, selectedCity.population) }}</span>
+          </div>
+          <div class="demo-item" *ngIf="selectedCity.nativeAmericanPopulation">
+            <span class="label">Native American</span>
+            <span class="value">{{ getPercentage(selectedCity.nativeAmericanPopulation, selectedCity.population) }}</span>
+          </div>
+          <div class="demo-item" *ngIf="selectedCity.pacificIslanderPopulation">
+            <span class="label">Pacific Islander</span>
+            <span class="value">{{ getPercentage(selectedCity.pacificIslanderPopulation, selectedCity.population) }}</span>
+          </div>
+          <div class="demo-item" *ngIf="selectedCity.twoOrMoreRacesPopulation">
+            <span class="label">Two or More Races</span>
+            <span class="value">{{ getPercentage(selectedCity.twoOrMoreRacesPopulation, selectedCity.population) }}</span>
+          </div>
+          <div class="demo-item" *ngIf="selectedCity.otherRacePopulation">
+            <span class="label">Other Race</span>
+            <span class="value">{{ getPercentage(selectedCity.otherRacePopulation, selectedCity.population) }}</span>
+          </div>
+        </div>
+        <p class="data-note">* Percentages may not sum to exactly 100% due to U.S. Census Bureau reporting methods</p>
+      </div>
+
+      <div class="info-section">
+        <h3>Ethnicity</h3>
+        <div class="demo-bar">
+          <div class="demo-item" *ngIf="selectedCity.hispanicPopulation">
+            <span class="label">Hispanic/Latino</span>
+            <span class="value">{{ getPercentage(selectedCity.hispanicPopulation, selectedCity.population) }}</span>
+          </div>
+          <div class="demo-item">
+            <span class="label">Non-Hispanic</span>
+            <span class="value">{{ getPercentage(selectedCity.population - selectedCity.hispanicPopulation, selectedCity.population) }}</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="info-section">
+        <h3>Housing</h3>
+        <p><strong>Median Home Value:</strong> {{ formatMoney(selectedCity.medianHomeValue) }}</p>
+        <p><strong>Median Rent:</strong> {{ formatMoney(selectedCity.medianRent) }}</p>
+        <p><strong>Homeownership:</strong> {{ getPercentage(selectedCity.ownerOccupied, selectedCity.ownerOccupied + selectedCity.renterOccupied) }}</p>
+      </div>
+
+      <div class="info-section">
+        <h3>Employment</h3>
+        <p><strong>Employed:</strong> {{ formatNumber(selectedCity.employed) }}</p>
+        <p><strong>Unemployment Rate:</strong> {{ getPercentage(selectedCity.unemployed, selectedCity.laborForce) }}</p>
+        <p><strong>Work From Home:</strong> {{ getPercentage(selectedCity.workFromHome, selectedCity.employed) }}</p>
+      </div>
+
+      <div class="info-section coordinates">
+        <p><strong>Coordinates:</strong> {{ selectedCity.latitude.toFixed(4) }}, {{ selectedCity.longitude.toFixed(4) }}</p>
+        <p><strong>GEOID:</strong> {{ selectedCity.geoid }}</p>
+      </div>
+    </div>
+  </div>
+</div>
