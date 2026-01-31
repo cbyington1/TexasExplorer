@@ -1,6 +1,6 @@
 # Environment files
 .env
-application.properties
+application-local.properties
 
 # Build files
 target/
