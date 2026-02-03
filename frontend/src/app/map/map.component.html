@@ -1,5 +1,213 @@
 <div class="map-container">
-  <!-- Left Sidebar - Full Height, Fixed -->
+  <!-- Mobile Filter Button -->
+  <button class="mobile-filter-btn" *ngIf="isMobile" (click)="toggleMobileFilters()">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <line x1="4" y1="6" x2="20" y2="6"></line>
+      <line x1="6" y1="12" x2="18" y2="12"></line>
+      <line x1="8" y1="18" x2="16" y2="18"></line>
+    </svg>
+  </button>
+
+  <!-- Mobile Filter Panel (slides from top) -->
+  <div class="mobile-filter-panel" *ngIf="isMobile" [class.open]="mobileFiltersOpen">
+    <div class="mobile-filter-header">
+      <h2>Filters</h2>
+      <button class="mobile-filter-close" (click)="toggleMobileFilters()">✕</button>
+    </div>
+    
+    <div class="mobile-filter-content">
+      <!-- Color By Section -->
+      <div class="mobile-filter-section">
+        <h3>Color By</h3>
+        <select 
+          class="mobile-select"
+          [ngModel]="colorConfig.metricKey"
+          (ngModelChange)="setColorMetric($event)"
+          (click)="$event.stopPropagation()"
+        >
+          <optgroup *ngFor="let category of filterCategories" [label]="category.label">
+            <option *ngFor="let metric of getDropdownMetrics(category)" [value]="metric.key">
+              {{ metric.label }}
+            </option>
+          </optgroup>
+        </select>
+        
+        <div class="mobile-toggle-row">
+          <button 
+            class="mobile-toggle-btn"
+            [class.active]="colorConfig.highIsGreen"
+            (click)="colorConfig.highIsGreen = true; addMarkers(); $event.stopPropagation()"
+          >High = Green</button>
+          <button 
+            class="mobile-toggle-btn"
+            [class.active]="!colorConfig.highIsGreen"
+            (click)="colorConfig.highIsGreen = false; addMarkers(); $event.stopPropagation()"
+          >Low = Green</button>
+        </div>
+      </div>
+
+      <!-- Size By Section -->
+      <div class="mobile-filter-section">
+        <h3>Size By</h3>
+        <select 
+          class="mobile-select"
+          [ngModel]="sizeConfig.metricKey"
+          (ngModelChange)="setSizeMetric($event)"
+          (click)="$event.stopPropagation()"
+        >
+          <optgroup *ngFor="let category of filterCategories" [label]="category.label">
+            <option *ngFor="let metric of getDropdownMetrics(category)" [value]="metric.key">
+              {{ metric.label }}
+            </option>
+          </optgroup>
+        </select>
+        
+        <div class="mobile-toggle-row">
+          <button 
+            class="mobile-toggle-btn"
+            [class.active]="sizeConfig.highIsGreen"
+            (click)="sizeConfig.highIsGreen = true; updateVisibleCities(); $event.stopPropagation()"
+          >High = Big</button>
+          <button 
+            class="mobile-toggle-btn"
+            [class.active]="!sizeConfig.highIsGreen"
+            (click)="sizeConfig.highIsGreen = false; updateVisibleCities(); $event.stopPropagation()"
+          >Low = Big</button>
+        </div>
+      </div>
+
+      <!-- Filter Categories -->
+      <div class="mobile-filter-section">
+        <div class="mobile-filter-section-header">
+          <h3>Filter Ranges</h3>
+          <button 
+            class="mobile-clear-all" 
+            *ngIf="getTotalFilterCount() > 0"
+            (click)="clearAllFilters(); $event.stopPropagation()"
+          >Clear All ({{ getTotalFilterCount() }})</button>
+        </div>
+
+        <div class="mobile-filter-categories">
+          <div 
+            class="mobile-filter-category" 
+            *ngFor="let category of filterCategories"
+          >
+            <div 
+              class="mobile-category-header" 
+              (click)="toggleCategory(category); $event.stopPropagation()"
+              [class.has-active]="getActiveFilterCount(category) > 0"
+            >
+              <span class="mobile-category-label">{{ category.label }}</span>
+              <span class="mobile-active-badge" *ngIf="getActiveFilterCount(category) > 0">
+                {{ getActiveFilterCount(category) }}
+              </span>
+              <span class="mobile-expand-icon">{{ category.expanded ? '−' : '+' }}</span>
+            </div>
+
+            <div class="mobile-category-content" *ngIf="category.expanded">
+              <div 
+                class="mobile-filter-metric" 
+                *ngFor="let metric of category.metrics"
+                [class.active]="isFilterActive(metric)"
+                [hidden]="metric.dropdownOnly"
+              >
+                <div class="mobile-metric-header">
+                  <span>{{ metric.label }}</span>
+                  <button 
+                    class="mobile-clear-metric" 
+                    *ngIf="isFilterActive(metric)"
+                    (click)="metric.type === 'balance' ? resetBalance(metric) : clearFilter(metric); $event.stopPropagation()"
+                  >✕</button>
+                </div>
+
+                <!-- Balance slider (single thumb) -->
+                <ng-container *ngIf="metric.type === 'balance'">
+                  <div class="mobile-balance-container">
+                    <span class="balance-label-left">♂</span>
+                    <input
+                      type="range"
+                      class="mobile-balance-slider"
+                      [min]="metric.min"
+                      [max]="metric.max"
+                      [step]="metric.step"
+                      [value]="getBalanceValue(metric)"
+                      [style.--split]="getBalanceSplit(metric)"
+                      (input)="updateBalanceVisual(metric, $any($event.target).valueAsNumber); $event.stopPropagation()"
+                      (change)="applyBalanceFilter(metric); $event.stopPropagation()"
+                      (click)="$event.stopPropagation()"
+                    />
+                    <span class="balance-label-right">♀</span>
+                  </div>
+                  <div class="balance-description"
+                       [class.male]="getBalanceValue(metric) > 50"
+                       [class.female]="getBalanceValue(metric) < 50">
+                    {{ getBalanceDescription(metric) }}
+                  </div>
+                </ng-container>
+
+                <!-- Regular range slider (two thumbs) -->
+                <ng-container *ngIf="metric.type !== 'balance'">
+                  <div class="mobile-range-container"
+                       (mousedown)="onRangeMouseDown($event, metric)"
+                       (touchstart)="onRangeTouchStart($event, metric)"
+                       (click)="$event.stopPropagation()">
+                    <div class="mobile-range-track">
+                      <div 
+                        class="mobile-range-fill"
+                        [style.left.%]="((getFilterMin(metric) - metric.min) / (metric.max - metric.min)) * 100"
+                        [style.right.%]="100 - ((getFilterMax(metric) - metric.min) / (metric.max - metric.min)) * 100"
+                      ></div>
+                    </div>
+                    <div class="mobile-range-thumb mobile-range-thumb-min"
+                         [style.left.%]="((getFilterMin(metric) - metric.min) / (metric.max - metric.min)) * 100">
+                    </div>
+                    <div class="mobile-range-thumb mobile-range-thumb-max"
+                         [style.left.%]="((getFilterMax(metric) - metric.min) / (metric.max - metric.min)) * 100">
+                    </div>
+                  </div>
+                  <div class="mobile-range-values">
+                    <span class="mobile-range-value">{{ getFilterMin(metric) }}</span>
+                    <span class="mobile-range-separator">–</span>
+                    <span class="mobile-range-value">{{ getFilterMax(metric) }}</span>
+                  </div>
+                </ng-container>
+              </div>
+            </div>
+          </div>
+
+          <!-- Classification Filter (checkboxes) -->
+          <div class="mobile-filter-category">
+            <div 
+              class="mobile-category-header" 
+              (click)="classificationExpanded = !classificationExpanded; $event.stopPropagation()"
+              [class.has-active]="classificationFilters.size > 0"
+            >
+              <span class="mobile-category-label">Classification</span>
+              <span class="mobile-active-badge" *ngIf="classificationFilters.size > 0">
+                {{ classificationFilters.size }}
+              </span>
+              <span class="mobile-expand-icon">{{ classificationExpanded ? '−' : '+' }}</span>
+            </div>
+            <div class="mobile-category-content" *ngIf="classificationExpanded">
+              <div class="classification-checkboxes">
+                <label class="classification-checkbox" *ngFor="let label of ['Rural', 'Suburban', 'Urban']" (click)="$event.stopPropagation()">
+                  <input 
+                    type="checkbox" 
+                    [checked]="isClassificationActive(label)"
+                    (change)="toggleClassificationFilter(label)"
+                  />
+                  <span class="checkmark"></span>
+                  {{ label }}
+                </label>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Left Sidebar - Desktop Only -->
   <div class="controls">
     <h1>Texas Explorer</h1>
 
@@ -54,7 +262,7 @@
         (ngModelChange)="setColorMetric($event)"
       >
         <optgroup *ngFor="let category of filterCategories" [label]="category.label">
-          <option *ngFor="let metric of category.metrics" [value]="metric.key">
+          <option *ngFor="let metric of getDropdownMetrics(category)" [value]="metric.key">
             {{ metric.label }}
           </option>
         </optgroup>
@@ -99,7 +307,7 @@
         (ngModelChange)="setSizeMetric($event)"
       >
         <optgroup *ngFor="let category of filterCategories" [label]="category.label">
-          <option *ngFor="let metric of category.metrics" [value]="metric.key">
+          <option *ngFor="let metric of getDropdownMetrics(category)" [value]="metric.key">
             {{ metric.label }}
           </option>
         </optgroup>
@@ -144,10 +352,10 @@
         <h3>Filters</h3>
         <button 
           class="clear-all-btn" 
-          *ngIf="activeFilters.size > 0"
+          *ngIf="getTotalFilterCount() > 0"
           (click)="clearAllFilters()"
         >
-          Clear All ({{ activeFilters.size }})
+          Clear All ({{ getTotalFilterCount() }})
         </button>
       </div>
 
@@ -163,7 +371,6 @@
             (click)="toggleCategory(category)"
             [class.has-active]="getActiveFilterCount(category) > 0"
           >
-            <span class="category-icon">{{ category.icon }}</span>
             <span class="category-label">{{ category.label }}</span>
             <span class="active-badge" *ngIf="getActiveFilterCount(category) > 0">
               {{ getActiveFilterCount(category) }}
@@ -177,56 +384,99 @@
               class="filter-metric" 
               *ngFor="let metric of category.metrics"
               [class.active]="isFilterActive(metric)"
+              [hidden]="metric.dropdownOnly"
             >
               <div class="metric-header">
                 <span class="metric-label">{{ metric.label }}</span>
                 <button 
                   class="clear-metric-btn" 
                   *ngIf="isFilterActive(metric)"
-                  (click)="clearFilter(metric); $event.stopPropagation()"
+                  (click)="metric.type === 'balance' ? resetBalance(metric) : clearFilter(metric); $event.stopPropagation()"
                   title="Clear filter"
                 >
                   ✕
                 </button>
               </div>
 
-              <!-- Dual Range Slider -->
-              <div class="range-slider-container">
-                <div class="range-inputs">
+              <!-- Balance Slider (single thumb for sex) -->
+              <ng-container *ngIf="metric.type === 'balance'">
+                <div class="balance-slider-container">
+                  <span class="balance-label">♂</span>
                   <input
                     type="range"
-                    class="range-min"
+                    class="balance-slider"
                     [min]="metric.min"
                     [max]="metric.max"
                     [step]="metric.step"
-                    [value]="getFilterMin(metric)"
-                    (input)="setFilterMin(metric, $any($event.target).valueAsNumber)"
+                    [value]="getBalanceValue(metric)"
+                    [style.--split]="getBalanceSplit(metric)"
+                    (input)="updateBalanceVisual(metric, $any($event.target).valueAsNumber)"
+                    (change)="applyBalanceFilter(metric)"
                   />
-                  <input
-                    type="range"
-                    class="range-max"
-                    [min]="metric.min"
-                    [max]="metric.max"
-                    [step]="metric.step"
-                    [value]="getFilterMax(metric)"
-                    (input)="setFilterMax(metric, $any($event.target).valueAsNumber)"
-                  />
+                  <span class="balance-label">♀</span>
                 </div>
-                <div class="range-track">
-                  <div 
-                    class="range-fill"
-                    [style.left.%]="((getFilterMin(metric) - metric.min) / (metric.max - metric.min)) * 100"
-                    [style.right.%]="100 - ((getFilterMax(metric) - metric.min) / (metric.max - metric.min)) * 100"
-                  ></div>
+                <div class="balance-description"
+                     [class.male]="getBalanceValue(metric) > 50"
+                     [class.female]="getBalanceValue(metric) < 50">
+                  {{ getBalanceDescription(metric) }}
                 </div>
-              </div>
+              </ng-container>
 
-              <!-- Value Display -->
-              <div class="range-values">
-                <span class="range-value min">{{ formatMetricValue(getFilterMin(metric), metric) }}</span>
-                <span class="range-separator">–</span>
-                <span class="range-value max">{{ formatMetricValue(getFilterMax(metric), metric) }}</span>
-              </div>
+              <!-- Dual Range Slider (for everything else) -->
+              <ng-container *ngIf="metric.type !== 'balance'">
+                <div class="range-slider-container" 
+                     (mousedown)="onRangeMouseDown($event, metric)"
+                     (touchstart)="onRangeTouchStart($event, metric)">
+                  <div class="range-track">
+                    <div 
+                      class="range-fill"
+                      [style.left.%]="((getFilterMin(metric) - metric.min) / (metric.max - metric.min)) * 100"
+                      [style.right.%]="100 - ((getFilterMax(metric) - metric.min) / (metric.max - metric.min)) * 100"
+                    ></div>
+                  </div>
+                  <div class="range-thumb range-thumb-min"
+                       [style.left.%]="((getFilterMin(metric) - metric.min) / (metric.max - metric.min)) * 100">
+                  </div>
+                  <div class="range-thumb range-thumb-max"
+                       [style.left.%]="((getFilterMax(metric) - metric.min) / (metric.max - metric.min)) * 100">
+                  </div>
+                </div>
+
+                <!-- Value Display -->
+                <div class="range-values">
+                  <span class="range-value">{{ getFilterMin(metric) }}</span>
+                  <span class="range-separator">–</span>
+                  <span class="range-value">{{ getFilterMax(metric) }}</span>
+                </div>
+              </ng-container>
+            </div>
+          </div>
+        </div>
+
+        <!-- Classification Filter (checkboxes) -->
+        <div class="filter-category">
+          <div 
+            class="category-header" 
+            (click)="classificationExpanded = !classificationExpanded"
+            [class.has-active]="classificationFilters.size > 0"
+          >
+            <span class="category-label">Classification</span>
+            <span class="active-badge" *ngIf="classificationFilters.size > 0">
+              {{ classificationFilters.size }}
+            </span>
+            <span class="expand-icon">{{ classificationExpanded ? '−' : '+' }}</span>
+          </div>
+          <div class="category-content" *ngIf="classificationExpanded">
+            <div class="classification-checkboxes">
+              <label class="classification-checkbox" *ngFor="let label of ['Rural', 'Suburban', 'Urban']">
+                <input 
+                  type="checkbox" 
+                  [checked]="isClassificationActive(label)"
+                  (change)="toggleClassificationFilter(label)"
+                />
+                <span class="checkmark"></span>
+                {{ label }}
+              </label>
             </div>
           </div>
         </div>
@@ -289,12 +539,18 @@
     </div>
   </div>
 
-  <!-- Right Info Panel - Always Visible -->
+  <!-- Right Info Panel - Desktop Only -->
   <div class="info-panel">
     <!-- Default State - Texas Stats -->
     <div *ngIf="!selectedCity && texasStats">
-      <h2>Texas Cities Average</h2>
+      <h2 [style.fontSize]="'1.25rem'">Texas Cities Average</h2>
       <p class="year-badge">{{ selectedYear }}</p>
+      
+      <!-- View History Button -->
+      <button class="history-btn" (click)="openHistoryPanel()">
+        View History (2012-2024)
+      </button>
+      
       <p class="data-note" style="margin-top: 0; border-top: none; padding-top: 0;">
         Based on {{ formatNumber(texasStats.totalPopulation) }} residents across 1,800+ incorporated cities. 
         Texas total population: ~30M
@@ -380,8 +636,13 @@
 
     <!-- City Selected State -->
     <div *ngIf="selectedCity">
-      <h2>{{ selectedCity.name.replace(' city', '').replace(' town', '') }}</h2>
+      <h2 [style.fontSize]="getCityNameFontSize(selectedCity)">{{ getCityDisplayName(selectedCity) }}</h2>
       <p class="year-badge">{{ selectedYear }}</p>
+      
+      <!-- View History Button -->
+      <button class="history-btn" (click)="openHistoryPanel()">
+        View History (2012-2024)
+      </button>
       
       <div class="info-section">
         <h3>Overview</h3>
@@ -461,10 +722,244 @@
         <p><strong>Work From Home:</strong> {{ getPercentage(selectedCity.workFromHome, selectedCity.employed) }}</p>
       </div>
 
+      <div class="info-section" *ngIf="cityClassification">
+        <p><strong>Classification:</strong> {{ cityClassification }} ({{ getUrbanizationIndex(selectedCity!)?.toFixed(1) }} / 100)</p>
+        <p class="data-note" style="margin-top: 4px; border-top: none; padding-top: 0;">Derived — not Census data</p>
+      </div>
+
       <div class="info-section coordinates">
         <p><strong>Coordinates:</strong> {{ selectedCity.latitude.toFixed(4) }}, {{ selectedCity.longitude.toFixed(4) }}</p>
         <p><strong>GEOID:</strong> {{ selectedCity.geoid }}</p>
       </div>
     </div>
+  </div>
+
+  <!-- History Panel (Slide-up) -->
+  <div class="history-panel-overlay" *ngIf="showHistoryPanel" (click)="closeHistoryPanel()"></div>
+  <div class="history-panel" [class.open]="showHistoryPanel">
+    <div class="history-panel-header">
+      <div class="history-title">
+        <h2 *ngIf="selectedCity" [style.fontSize]="getCityNameFontSize(selectedCity)">{{ getCityDisplayName(selectedCity) }}</h2>
+        <h2 *ngIf="!selectedCity">Texas Overall</h2>
+        <span class="history-subtitle">Historical Data (2012–2024)</span>
+      </div>
+      <button class="history-close-btn" (click)="closeHistoryPanel()">✕</button>
+    </div>
+
+    <div class="history-panel-content">
+      <!-- Loading State -->
+      <div class="history-loading" *ngIf="historyLoading">
+        <div class="loading-spinner"></div>
+        <p>Loading historical data...</p>
+      </div>
+
+      <!-- All Charts grouped by category -->
+      <div class="history-all-charts" *ngIf="!historyLoading && historyData.length > 0">
+        <div class="history-category" *ngFor="let cat of getHistoryMetricCategories()">
+          <ng-container *ngIf="cat !== 'Classification' || selectedCity">
+            <h3 class="history-category-title">{{ cat }}</h3>
+            <div class="history-charts-grid">
+              <div class="chart-card" *ngFor="let metric of getHistoryMetricsByCategory(cat)">
+                <div class="chart-header">
+                  <h4>{{ metric.label }}</h4>
+                  <span class="chart-change" 
+                        *ngIf="getMetricChange(metric) as change"
+                        [class.positive]="change.positive" 
+                        [class.negative]="!change.positive">
+                    {{ change.value }}
+                  </span>
+                </div>
+                <div class="chart-container">
+                  <canvas [id]="'chart-' + metric.key"></canvas>
+                </div>
+              </div>
+            </div>
+          </ng-container>
+        </div>
+      </div>
+
+      <!-- No Data State -->
+      <div class="history-no-data" *ngIf="!historyLoading && historyData.length === 0">
+        <p>No historical data available for this city.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Mobile: Persistent Bottom Card -->
+  <div class="mobile-card" *ngIf="isMobile" [class.expanded]="mobileCardExpanded" (click)="toggleMobileCard()">
+    <div class="mobile-card-handle"></div>
+    
+    <!-- Texas Stats (when no city selected) -->
+    <div class="mobile-card-content" *ngIf="!selectedCity && texasStats">
+      <div class="mobile-card-header">
+        <h3>Texas Overview</h3>
+        <span class="mobile-card-year">{{ selectedYear }}</span>
+      </div>
+      
+      <!-- Collapsed: Key stats row -->
+      <div class="mobile-card-preview" *ngIf="!mobileCardExpanded">
+        <span><strong>{{ formatNumber(texasStats.totalPopulation) }}</strong> pop</span>
+        <span><strong>{{ formatMoney(texasStats.medianHouseholdIncome) }}</strong> income</span>
+        <span><strong>{{ texasStats.medianAge?.toFixed(0) }}</strong> age</span>
+      </div>
+      
+      <!-- Expanded: All stats organized -->
+      <div class="mobile-card-sections" *ngIf="mobileCardExpanded">
+        <!-- View History Button (Mobile) -->
+        <button class="mobile-history-btn" (click)="openHistoryPanel(); $event.stopPropagation()">
+          View History (2012-2024)
+        </button>
+
+        <!-- Overview -->
+        <div class="card-section">
+          <div class="section-title">Overview</div>
+          <div class="section-grid">
+            <div class="grid-item"><span class="gl">Population</span><span class="gv">{{ formatNumber(texasStats.totalPopulation) }}</span></div>
+            <div class="grid-item"><span class="gl">Median Age</span><span class="gv">{{ texasStats.medianAge?.toFixed(1) }} yrs</span></div>
+            <div class="grid-item"><span class="gl">Median Income</span><span class="gv">{{ formatMoney(texasStats.medianHouseholdIncome) }}</span></div>
+            <div class="grid-item"><span class="gl">Per Capita</span><span class="gv">{{ formatMoney(texasStats.perCapitaIncome) }}</span></div>
+          </div>
+        </div>
+
+        <!-- Sex -->
+        <div class="card-section">
+          <div class="section-title">Sex</div>
+          <div class="section-grid">
+            <div class="grid-item"><span class="gl">Male</span><span class="gv">{{ getPercentage(texasStats.totalMale, texasStats.totalPopulation) }}</span></div>
+            <div class="grid-item"><span class="gl">Female</span><span class="gv">{{ getPercentage(texasStats.totalFemale, texasStats.totalPopulation) }}</span></div>
+          </div>
+        </div>
+
+        <!-- Race -->
+        <div class="card-section">
+          <div class="section-title">Race</div>
+          <div class="section-grid three-col">
+            <div class="grid-item"><span class="gl">White</span><span class="gv">{{ getPercentage(texasStats.whitePopulation, texasStats.totalPopulation) }}</span></div>
+            <div class="grid-item"><span class="gl">Black</span><span class="gv">{{ getPercentage(texasStats.blackPopulation, texasStats.totalPopulation) }}</span></div>
+            <div class="grid-item"><span class="gl">Asian</span><span class="gv">{{ getPercentage(texasStats.asianPopulation, texasStats.totalPopulation) }}</span></div>
+            <div class="grid-item"><span class="gl">Native Am.</span><span class="gv">{{ getPercentage(texasStats.nativeAmericanPopulation, texasStats.totalPopulation) }}</span></div>
+            <div class="grid-item"><span class="gl">Pacific Isl.</span><span class="gv">{{ getPercentage(texasStats.pacificIslanderPopulation, texasStats.totalPopulation) }}</span></div>
+            <div class="grid-item"><span class="gl">Two+</span><span class="gv">{{ getPercentage(texasStats.twoOrMoreRacesPopulation, texasStats.totalPopulation) }}</span></div>
+            <div class="grid-item"><span class="gl">Other</span><span class="gv">{{ getPercentage(texasStats.otherRacePopulation, texasStats.totalPopulation) }}</span></div>
+          </div>
+        </div>
+
+        <!-- Ethnicity -->
+        <div class="card-section">
+          <div class="section-title">Ethnicity</div>
+          <div class="section-grid">
+            <div class="grid-item"><span class="gl">Hispanic</span><span class="gv">{{ getPercentage(texasStats.hispanicPopulation, texasStats.totalPopulation) }}</span></div>
+            <div class="grid-item"><span class="gl">Non-Hispanic</span><span class="gv">{{ getPercentage(texasStats.totalPopulation - texasStats.hispanicPopulation, texasStats.totalPopulation) }}</span></div>
+          </div>
+        </div>
+
+        <!-- Housing -->
+        <div class="card-section">
+          <div class="section-title">Housing</div>
+          <div class="section-grid">
+            <div class="grid-item"><span class="gl">Home Value</span><span class="gv">{{ formatMoney(texasStats.medianHomeValue) }}</span></div>
+            <div class="grid-item"><span class="gl">Rent</span><span class="gv">{{ formatMoney(texasStats.medianRent) }}</span></div>
+            <div class="grid-item"><span class="gl">Ownership</span><span class="gv">{{ getPercentage(texasStats.ownerOccupied, texasStats.ownerOccupied + texasStats.renterOccupied) }}</span></div>
+          </div>
+        </div>
+
+        <!-- Employment -->
+        <div class="card-section">
+          <div class="section-title">Employment</div>
+          <div class="section-grid">
+            <div class="grid-item"><span class="gl">Unemployment</span><span class="gv">{{ getPercentage(texasStats.unemployed, texasStats.laborForce) }}</span></div>
+            <div class="grid-item"><span class="gl">Work From Home</span><span class="gv">{{ getPercentage(texasStats.workFromHome, texasStats.employed) }}</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- City Stats (when city selected) -->
+    <div class="mobile-card-content" *ngIf="selectedCity">
+      <div class="mobile-card-header">
+        <h3>{{ getCityDisplayName(selectedCity) }}</h3>
+        <span class="mobile-card-year">{{ selectedYear }}</span>
+      </div>
+      
+      <!-- Collapsed: Key stats row -->
+      <div class="mobile-card-preview" *ngIf="!mobileCardExpanded">
+        <span><strong>{{ formatNumber(selectedCity.population) }}</strong> pop</span>
+        <span><strong>{{ formatMoney(selectedCity.medianHouseholdIncome) }}</strong> income</span>
+        <span><strong>{{ selectedCity.medianAge?.toFixed(0) }}</strong> age</span>
+      </div>
+      
+      <!-- Expanded: All stats organized -->
+      <div class="mobile-card-sections" *ngIf="mobileCardExpanded">
+        <!-- View History Button (Mobile) -->
+        <button class="mobile-history-btn" (click)="openHistoryPanel(); $event.stopPropagation()">
+          View History (2012-2024)
+        </button>
+
+        <!-- Overview -->
+        <div class="card-section">
+          <div class="section-title">Overview</div>
+          <div class="section-grid">
+            <div class="grid-item"><span class="gl">Population</span><span class="gv">{{ formatNumber(selectedCity.population) }}</span></div>
+            <div class="grid-item"><span class="gl">Median Age</span><span class="gv">{{ selectedCity.medianAge?.toFixed(1) }} yrs</span></div>
+            <div class="grid-item"><span class="gl">Median Income</span><span class="gv">{{ formatMoney(selectedCity.medianHouseholdIncome) }}</span></div>
+            <div class="grid-item"><span class="gl">Per Capita</span><span class="gv">{{ formatMoney(selectedCity.perCapitaIncome) }}</span></div>
+            <div class="grid-item"><span class="gl">Land Area</span><span class="gv">{{ selectedCity.landAreaSqMi?.toFixed(1) }} sq mi</span></div>
+          </div>
+        </div>
+
+        <!-- Sex -->
+        <div class="card-section">
+          <div class="section-title">Sex</div>
+          <div class="section-grid">
+            <div class="grid-item"><span class="gl">Male</span><span class="gv">{{ getPercentage(selectedCity.malePopulation, selectedCity.population) }}</span></div>
+            <div class="grid-item"><span class="gl">Female</span><span class="gv">{{ getPercentage(selectedCity.femalePopulation, selectedCity.population) }}</span></div>
+          </div>
+        </div>
+
+        <!-- Race -->
+        <div class="card-section">
+          <div class="section-title">Race</div>
+          <div class="section-grid three-col">
+            <div class="grid-item"><span class="gl">White</span><span class="gv">{{ getPercentage(selectedCity.whitePopulation, selectedCity.population) }}</span></div>
+            <div class="grid-item"><span class="gl">Black</span><span class="gv">{{ getPercentage(selectedCity.blackPopulation, selectedCity.population) }}</span></div>
+            <div class="grid-item"><span class="gl">Asian</span><span class="gv">{{ getPercentage(selectedCity.asianPopulation, selectedCity.population) }}</span></div>
+            <div class="grid-item"><span class="gl">Native Am.</span><span class="gv">{{ getPercentage(selectedCity.nativeAmericanPopulation, selectedCity.population) }}</span></div>
+            <div class="grid-item"><span class="gl">Pacific Isl.</span><span class="gv">{{ getPercentage(selectedCity.pacificIslanderPopulation, selectedCity.population) }}</span></div>
+            <div class="grid-item"><span class="gl">Two+</span><span class="gv">{{ getPercentage(selectedCity.twoOrMoreRacesPopulation, selectedCity.population) }}</span></div>
+            <div class="grid-item"><span class="gl">Other</span><span class="gv">{{ getPercentage(selectedCity.otherRacePopulation, selectedCity.population) }}</span></div>
+          </div>
+        </div>
+
+        <!-- Ethnicity -->
+        <div class="card-section">
+          <div class="section-title">Ethnicity</div>
+          <div class="section-grid">
+            <div class="grid-item"><span class="gl">Hispanic</span><span class="gv">{{ getPercentage(selectedCity.hispanicPopulation, selectedCity.population) }}</span></div>
+            <div class="grid-item"><span class="gl">Non-Hispanic</span><span class="gv">{{ getPercentage(selectedCity.population - selectedCity.hispanicPopulation, selectedCity.population) }}</span></div>
+          </div>
+        </div>
+
+        <!-- Housing -->
+        <div class="card-section">
+          <div class="section-title">Housing</div>
+          <div class="section-grid">
+            <div class="grid-item"><span class="gl">Home Value</span><span class="gv">{{ formatMoney(selectedCity.medianHomeValue) }}</span></div>
+            <div class="grid-item"><span class="gl">Rent</span><span class="gv">{{ formatMoney(selectedCity.medianRent) }}</span></div>
+            <div class="grid-item"><span class="gl">Ownership</span><span class="gv">{{ getPercentage(selectedCity.ownerOccupied, selectedCity.ownerOccupied + selectedCity.renterOccupied) }}</span></div>
+          </div>
+        </div>
+
+        <!-- Employment -->
+        <div class="card-section">
+          <div class="section-title">Employment</div>
+          <div class="section-grid">
+            <div class="grid-item"><span class="gl">Unemployment</span><span class="gv">{{ getPercentage(selectedCity.unemployed, selectedCity.laborForce) }}</span></div>
+            <div class="grid-item"><span class="gl">Work From Home</span><span class="gv">{{ getPercentage(selectedCity.workFromHome, selectedCity.employed) }}</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    
+    <div class="mobile-card-hint">{{ mobileCardExpanded ? '▼ tap to collapse' : '▲ tap for more' }}</div>
   </div>
 </div>

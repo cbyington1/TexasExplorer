@@ -1,7 +1,8 @@
-import { Component, OnInit, AfterViewInit, ChangeDetectorRef } from '@angular/core';
+import { Component, OnInit, AfterViewInit, ChangeDetectorRef, HostListener } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import * as L from 'leaflet';
+import { forkJoin } from 'rxjs';
 import { CityService } from '../city.service';
 import { City } from '../city.model';
 
@@ -9,12 +10,13 @@ import { City } from '../city.model';
 interface FilterMetric {
   key: string;
   label: string;
-  type: 'raw' | 'percent' | 'currency' | 'years' | 'minutes';
+  type: 'raw' | 'percent' | 'currency' | 'years' | 'minutes' | 'balance';
   field: keyof City;
   percentOf?: keyof City; // For percentage calculations
   min: number;
   max: number;
   step: number;
+  dropdownOnly?: boolean; // Only show in color/size dropdowns, not in filter sliders
 }
 
 // Filter category with metrics
@@ -49,6 +51,7 @@ interface ColorConfig {
 export class MapComponent implements OnInit, AfterViewInit {
   private map!: L.Map;
   private markers: L.CircleMarker[] = [];
+  private selectedCityMarker: L.CircleMarker | null = null; // NEW: Dedicated marker for selected city
   private allCities: City[] = [];
   
   visibleCities: City[] = [];
@@ -66,12 +69,70 @@ export class MapComponent implements OnInit, AfterViewInit {
   
   texasStats: any = null;
 
+  // City classification
+  cityClassification: string = '';
+  classificationFilters: Set<string> = new Set(); // empty = show all
+  classificationExpanded: boolean = false;
+
   // Data quality filter
   requireCompleteData: boolean = true;
 
   // List panel
   showListPanel: boolean = false;
   sortedCitiesList: City[] = [];
+
+  // History panel
+  showHistoryPanel: boolean = false;
+  historyData: City[] = [];
+  historyLoading: boolean = false;
+  
+  historyMetrics: { key: string; label: string; category: string; getValue: (city: City) => number | null; format: (v: number) => string; yFormat: (v: number) => string }[] = [
+    // Overview - standalone numbers
+    { key: 'population', label: 'Population', category: 'Overview', getValue: (c) => c.population, format: (v) => v?.toLocaleString() || 'N/A', yFormat: (v) => v >= 1000 ? (v/1000).toFixed(0) + 'k' : v?.toString() },
+    { key: 'medianAge', label: 'Median Age', category: 'Overview', getValue: (c) => c.medianAge, format: (v) => v?.toFixed(1) + ' yrs', yFormat: (v) => v?.toFixed(0) },
+    
+    // Income - standalone numbers
+    { key: 'medianHouseholdIncome', label: 'Median Household Income', category: 'Income', getValue: (c) => c.medianHouseholdIncome, format: (v) => v ? '$' + v.toLocaleString() : 'N/A', yFormat: (v) => '$' + (v/1000).toFixed(0) + 'k' },
+    { key: 'perCapitaIncome', label: 'Per Capita Income', category: 'Income', getValue: (c) => c.perCapitaIncome, format: (v) => v ? '$' + v.toLocaleString() : 'N/A', yFormat: (v) => '$' + (v/1000).toFixed(0) + 'k' },
+    
+    // Housing - standalone numbers + composition %
+    { key: 'medianHomeValue', label: 'Median Home Value', category: 'Housing', getValue: (c) => c.medianHomeValue, format: (v) => v ? '$' + v.toLocaleString() : 'N/A', yFormat: (v) => '$' + (v/1000).toFixed(0) + 'k' },
+    { key: 'medianRent', label: 'Median Rent', category: 'Housing', getValue: (c) => c.medianRent, format: (v) => v ? '$' + v.toLocaleString() : 'N/A', yFormat: (v) => '$' + v?.toFixed(0) },
+    { key: 'ownershipRate', label: 'Homeownership Rate', category: 'Housing', getValue: (c) => (c.ownerOccupied && (c.ownerOccupied + c.renterOccupied) > 0) ? (c.ownerOccupied / (c.ownerOccupied + c.renterOccupied)) * 100 : null, format: (v) => v?.toFixed(1) + '%', yFormat: (v) => v?.toFixed(0) + '%' },
+    
+    // Employment - composition %
+    { key: 'unemploymentRate', label: 'Unemployment Rate', category: 'Employment', getValue: (c) => (c.laborForce && c.laborForce > 0) ? (c.unemployed / c.laborForce) * 100 : null, format: (v) => v?.toFixed(1) + '%', yFormat: (v) => v?.toFixed(1) + '%' },
+    { key: 'laborForcePct', label: 'Labor Force Participation', category: 'Employment', getValue: (c) => (c.population && c.population > 0) ? (c.laborForce / c.population) * 100 : null, format: (v) => v?.toFixed(1) + '%', yFormat: (v) => v?.toFixed(0) + '%' },
+    { key: 'workFromHomePct', label: 'Work From Home %', category: 'Employment', getValue: (c) => (c.employed && c.employed > 0) ? (c.workFromHome / c.employed) * 100 : null, format: (v) => v?.toFixed(1) + '%', yFormat: (v) => v?.toFixed(1) + '%' },
+    
+    // Sex - composition %
+    { key: 'malePct', label: 'Male %', category: 'Sex', getValue: (c) => (c.malePopulation && c.population > 0) ? (c.malePopulation / c.population) * 100 : null, format: (v) => v?.toFixed(1) + '%', yFormat: (v) => v?.toFixed(1) + '%' },
+    { key: 'femalePct', label: 'Female %', category: 'Sex', getValue: (c) => (c.femalePopulation && c.population > 0) ? (c.femalePopulation / c.population) * 100 : null, format: (v) => v?.toFixed(1) + '%', yFormat: (v) => v?.toFixed(1) + '%' },
+    
+    // Race - composition %
+    { key: 'whitePct', label: 'White %', category: 'Race', getValue: (c) => (c.whitePopulation && c.population > 0) ? (c.whitePopulation / c.population) * 100 : null, format: (v) => v?.toFixed(1) + '%', yFormat: (v) => v?.toFixed(0) + '%' },
+    { key: 'blackPct', label: 'Black %', category: 'Race', getValue: (c) => (c.blackPopulation && c.population > 0) ? (c.blackPopulation / c.population) * 100 : null, format: (v) => v?.toFixed(1) + '%', yFormat: (v) => v?.toFixed(0) + '%' },
+    { key: 'asianPct', label: 'Asian %', category: 'Race', getValue: (c) => (c.asianPopulation && c.population > 0) ? (c.asianPopulation / c.population) * 100 : null, format: (v) => v?.toFixed(1) + '%', yFormat: (v) => v?.toFixed(0) + '%' },
+    { key: 'nativeAmericanPct', label: 'Native American %', category: 'Race', getValue: (c) => (c.nativeAmericanPopulation && c.population > 0) ? (c.nativeAmericanPopulation / c.population) * 100 : null, format: (v) => v?.toFixed(1) + '%', yFormat: (v) => v?.toFixed(1) + '%' },
+    { key: 'pacificIslanderPct', label: 'Pacific Islander %', category: 'Race', getValue: (c) => (c.pacificIslanderPopulation && c.population > 0) ? (c.pacificIslanderPopulation / c.population) * 100 : null, format: (v) => v?.toFixed(1) + '%', yFormat: (v) => v?.toFixed(1) + '%' },
+    { key: 'twoOrMorePct', label: 'Two or More Races %', category: 'Race', getValue: (c) => (c.twoOrMoreRacesPopulation && c.population > 0) ? (c.twoOrMoreRacesPopulation / c.population) * 100 : null, format: (v) => v?.toFixed(1) + '%', yFormat: (v) => v?.toFixed(1) + '%' },
+    { key: 'otherRacePct', label: 'Other Race %', category: 'Race', getValue: (c) => (c.otherRacePopulation && c.population > 0) ? (c.otherRacePopulation / c.population) * 100 : null, format: (v) => v?.toFixed(1) + '%', yFormat: (v) => v?.toFixed(1) + '%' },
+    
+    // Ethnicity - composition % (separate from race)
+    { key: 'hispanicPct', label: 'Hispanic/Latino %', category: 'Ethnicity', getValue: (c) => (c.hispanicPopulation && c.population > 0) ? (c.hispanicPopulation / c.population) * 100 : null, format: (v) => v?.toFixed(1) + '%', yFormat: (v) => v?.toFixed(0) + '%' },
+
+    // Classification - continuous urbanization index
+    { key: 'urbanIndex', label: 'Urbanization Index', category: 'Classification', getValue: (c) => this.getUrbanizationIndex(c), format: (v) => v?.toFixed(1) + ' / 100', yFormat: (v) => v?.toFixed(0) },
+  ];
+
+  // ============ NEW: Mobile state ============
+  isMobile: boolean = false;
+  mobileCardExpanded: boolean = false;
+  mobileFiltersOpen: boolean = false;
+  
+  // Balance slider values (single value, not min/max range)
+  balanceValues: Map<string, number> = new Map([['malePct', 50]]);
+  // ============================================
 
   // Filter system
   filterCategories: FilterCategory[] = [];
@@ -102,7 +163,282 @@ export class MapComponent implements OnInit, AfterViewInit {
     private cdr: ChangeDetectorRef
   ) {
     this.initFilterCategories();
+    this.checkMobile(); // NEW
   }
+
+  // ============ NEW: Window resize listener ============
+  @HostListener('window:resize')
+  onResize(): void {
+    this.checkMobile();
+  }
+
+  // NEW: Check if we're on mobile
+  private checkMobile(): void {
+    this.isMobile = window.innerWidth <= 768;
+  }
+
+  // NEW: Toggle mobile card expanded state
+  toggleMobileCard(): void {
+    this.mobileCardExpanded = !this.mobileCardExpanded;
+  }
+
+  // NEW: Toggle mobile filters panel
+  toggleMobileFilters(): void {
+    this.mobileFiltersOpen = !this.mobileFiltersOpen;
+    // Collapse card when opening filters
+    if (this.mobileFiltersOpen) {
+      this.mobileCardExpanded = false;
+    }
+  }
+
+  // NEW: Get balance slider value
+  getBalanceValue(metric: FilterMetric): number {
+    return this.balanceValues.get(metric.key) ?? 50;
+  }
+
+  // Update balance slider visual only (called during drag via input event)
+  updateBalanceVisual(metric: FilterMetric, value: number): void {
+    this.balanceValues.set(metric.key, value);
+  }
+
+  // Apply balance filter (called on release via change event)
+  applyBalanceFilter(metric: FilterMetric): void {
+    const value = this.getBalanceValue(metric);
+    
+    if (value === 50) {
+      this.activeFilters.delete(metric.key);
+    } else if (value > 50) {
+      this.activeFilters.set(metric.key, {
+        metricKey: metric.key,
+        min: value,
+        max: metric.max
+      });
+    } else {
+      this.activeFilters.set(metric.key, {
+        metricKey: metric.key,
+        min: metric.min,
+        max: value
+      });
+    }
+    
+    this.applyFilters();
+  }
+
+  // Get a human-readable description of what the balance filter is doing
+  getBalanceDescription(metric: FilterMetric): string {
+    const value = this.getBalanceValue(metric);
+    if (value === 50) return 'Showing all cities';
+    if (value > 50) return `≥${value}% Male`;
+    return `≥${100 - value}% Female`;
+  }
+
+  // Get the color class for balance description text
+  getBalanceColorClass(metric: FilterMetric): string {
+    const value = this.getBalanceValue(metric);
+    if (value > 50) return 'male';
+    if (value < 50) return 'female';
+    return '';
+  }
+
+  // Get the slider track gradient style based on current value
+  getBalanceSplit(metric: FilterMetric): string {
+    return this.getBalanceValue(metric) + '%';
+  }
+
+  // NEW: Check if balance is at default (50/50)
+  isBalanceDefault(metric: FilterMetric): boolean {
+    return this.getBalanceValue(metric) === 50;
+  }
+
+  // NEW: Reset balance to 50/50
+  resetBalance(metric: FilterMetric): void {
+    this.balanceValues.set(metric.key, 50);
+    this.activeFilters.delete(metric.key);
+    this.applyFilters();
+  }
+
+  // NEW: Handle typed input for balance slider
+  onBalanceInputChange(event: Event, metric: FilterMetric, type: 'male' | 'female'): void {
+    const input = event.target as HTMLInputElement;
+    let value = parseFloat(input.value);
+    
+    // Validate 0-100
+    if (isNaN(value) || value < 0 || value > 100) {
+      // Revert
+      const currentMale = this.getBalanceValue(metric);
+      input.value = type === 'male' ? String(currentMale) : String(100 - currentMale);
+      return;
+    }
+    
+    // If female was typed, convert to male percentage
+    if (type === 'female') {
+      value = 100 - value;
+    }
+    
+    this.updateBalanceVisual(metric, value);
+    this.applyBalanceFilter(metric);
+  }
+
+  // ============ Custom Range Slider Handling ============
+  private draggingMetric: FilterMetric | null = null;
+  private draggingThumb: 'min' | 'max' | null = null;
+  private sliderRect: DOMRect | null = null;
+  rangeError: string | null = null;
+  private errorTimeout: any = null;
+
+  onMinInputChange(event: Event, metric: FilterMetric): void {
+    const input = event.target as HTMLInputElement;
+    const value = parseFloat(input.value);
+    const current = this.filterValues.get(metric.key) || { min: metric.min, max: metric.max };
+    
+    // Validate: must be >= metric.min and < current.max
+    if (isNaN(value) || value < metric.min || value >= current.max) {
+      // Revert and show error
+      input.value = String(current.min);
+      this.showRangeError(metric.key);
+      return;
+    }
+    
+    current.min = value;
+    this.filterValues.set(metric.key, current);
+    this.onFilterChange(metric);
+    this.cdr.detectChanges();
+  }
+
+  onMaxInputChange(event: Event, metric: FilterMetric): void {
+    const input = event.target as HTMLInputElement;
+    const value = parseFloat(input.value);
+    const current = this.filterValues.get(metric.key) || { min: metric.min, max: metric.max };
+    
+    // Validate: must be <= metric.max and > current.min
+    if (isNaN(value) || value > metric.max || value <= current.min) {
+      // Revert and show error
+      input.value = String(current.max);
+      this.showRangeError(metric.key);
+      return;
+    }
+    
+    current.max = value;
+    this.filterValues.set(metric.key, current);
+    this.onFilterChange(metric);
+    this.cdr.detectChanges();
+  }
+
+  private showRangeError(metricKey: string): void {
+    this.rangeError = metricKey;
+    
+    // Clear any existing timeout
+    if (this.errorTimeout) {
+      clearTimeout(this.errorTimeout);
+    }
+    
+    // Hide after 2 seconds
+    this.errorTimeout = setTimeout(() => {
+      this.rangeError = null;
+      this.cdr.detectChanges();
+    }, 2000);
+  }
+
+  // Auto-resize input based on value length
+  autoResizeInput(event: Event): void {
+    const input = event.target as HTMLInputElement;
+    const length = input.value.length;
+    // Base width + character width
+    input.style.width = Math.max(45, Math.min(100, 20 + length * 9)) + 'px';
+  }
+
+  onRangeMouseDown(event: MouseEvent, metric: FilterMetric): void {
+    const container = event.currentTarget as HTMLElement;
+    this.startDrag(event.clientX, container, metric);
+    
+    const onMouseMove = (e: MouseEvent) => this.onDragMove(e.clientX);
+    const onMouseUp = () => {
+      document.removeEventListener('mousemove', onMouseMove);
+      document.removeEventListener('mouseup', onMouseUp);
+      this.endDrag();
+    };
+    
+    document.addEventListener('mousemove', onMouseMove);
+    document.addEventListener('mouseup', onMouseUp);
+  }
+
+  onRangeTouchStart(event: TouchEvent, metric: FilterMetric): void {
+    const container = event.currentTarget as HTMLElement;
+    const touch = event.touches[0];
+    this.startDrag(touch.clientX, container, metric);
+    
+    const onTouchMove = (e: TouchEvent) => {
+      e.preventDefault();
+      this.onDragMove(e.touches[0].clientX);
+    };
+    const onTouchEnd = () => {
+      document.removeEventListener('touchmove', onTouchMove);
+      document.removeEventListener('touchend', onTouchEnd);
+      this.endDrag();
+    };
+    
+    document.addEventListener('touchmove', onTouchMove, { passive: false });
+    document.addEventListener('touchend', onTouchEnd);
+  }
+
+  private startDrag(clientX: number, container: HTMLElement, metric: FilterMetric): void {
+    this.sliderRect = container.getBoundingClientRect();
+    this.draggingMetric = metric;
+    
+    // Figure out which thumb is closer to the click
+    const percent = (clientX - this.sliderRect.left) / this.sliderRect.width;
+    const clickValue = metric.min + percent * (metric.max - metric.min);
+    
+    const minVal = this.getFilterMin(metric);
+    const maxVal = this.getFilterMax(metric);
+    
+    const distToMin = Math.abs(clickValue - minVal);
+    const distToMax = Math.abs(clickValue - maxVal);
+    
+    // Choose the closer thumb, but if they're at the same spot, choose based on direction
+    if (distToMin <= distToMax) {
+      this.draggingThumb = 'min';
+    } else {
+      this.draggingThumb = 'max';
+    }
+    
+    // Immediately update to click position
+    this.onDragMove(clientX);
+  }
+
+  private onDragMove(clientX: number): void {
+    if (!this.sliderRect || !this.draggingMetric || !this.draggingThumb) return;
+    
+    const metric = this.draggingMetric;
+    let percent = (clientX - this.sliderRect.left) / this.sliderRect.width;
+    percent = Math.max(0, Math.min(1, percent)); // Clamp 0-1
+    
+    let value = metric.min + percent * (metric.max - metric.min);
+    // Snap to step
+    value = Math.round(value / metric.step) * metric.step;
+    value = Math.max(metric.min, Math.min(metric.max, value));
+    
+    const current = this.filterValues.get(metric.key) || { min: metric.min, max: metric.max };
+    
+    if (this.draggingThumb === 'min') {
+      // Min can't exceed max - step
+      current.min = Math.min(value, current.max - metric.step);
+    } else {
+      // Max can't go below min + step
+      current.max = Math.max(value, current.min + metric.step);
+    }
+    
+    this.filterValues.set(metric.key, current);
+    this.onFilterChange(metric);
+    this.cdr.detectChanges();
+  }
+
+  private endDrag(): void {
+    this.draggingMetric = null;
+    this.draggingThumb = null;
+    this.sliderRect = null;
+  }
+  // ======================================================
 
   ngOnInit(): void {
     this.loadAvailableYears();
@@ -120,44 +456,45 @@ export class MapComponent implements OnInit, AfterViewInit {
       {
         key: 'population',
         label: 'Population & Age',
-        icon: '👥',
+        icon: '',
         expanded: false,
         metrics: [
-          { key: 'population', label: 'Population', type: 'raw', field: 'population', min: 100, max: 300000, step: 1000 },
+          { key: 'population', label: 'Population', type: 'raw', field: 'population', min: 100, max: 500000, step: 1000 },
           { key: 'medianAge', label: 'Median Age', type: 'years', field: 'medianAge', min: 18, max: 70, step: 1 },
-          { key: 'ageUnder18Pct', label: 'Under 18', type: 'percent', field: 'ageUnder18', percentOf: 'population', min: 0, max: 45, step: 1 },
-          { key: 'age65plusPct', label: 'Age 65+', type: 'percent', field: 'age65plus', percentOf: 'population', min: 0, max: 50, step: 1 },
+          { key: 'ageUnder18Pct', label: 'Under 18', type: 'percent', field: 'ageUnder18', percentOf: 'population', min: 0, max: 100, step: 1 },
+          { key: 'age65plusPct', label: 'Age 65+', type: 'percent', field: 'age65plus', percentOf: 'population', min: 0, max: 100, step: 1 },
         ]
       },
       {
         key: 'sex',
         label: 'Sex',
-        icon: '⚤',
+        icon: '',
         expanded: false,
         metrics: [
-          { key: 'malePct', label: 'Male', type: 'percent', field: 'malePopulation', percentOf: 'population', min: 25, max: 75, step: 1 },
-          { key: 'femalePct', label: 'Female', type: 'percent', field: 'femalePopulation', percentOf: 'population', min: 25, max: 75, step: 1 },
+          { key: 'malePct', label: 'Male / Female Balance', type: 'balance', field: 'malePopulation', percentOf: 'population', min: 0, max: 100, step: 1 },
+          { key: 'malePercent', label: 'Male %', type: 'percent', field: 'malePopulation', percentOf: 'population', min: 0, max: 100, step: 1, dropdownOnly: true },
+          { key: 'femalePercent', label: 'Female %', type: 'percent', field: 'femalePopulation', percentOf: 'population', min: 0, max: 100, step: 1, dropdownOnly: true },
         ]
       },
       {
         key: 'race',
         label: 'Race',
-        icon: '🌍',
+        icon: '',
         expanded: false,
         metrics: [
           { key: 'whitePct', label: 'White', type: 'percent', field: 'whitePopulation', percentOf: 'population', min: 0, max: 100, step: 1 },
           { key: 'blackPct', label: 'Black', type: 'percent', field: 'blackPopulation', percentOf: 'population', min: 0, max: 100, step: 1 },
-          { key: 'asianPct', label: 'Asian', type: 'percent', field: 'asianPopulation', percentOf: 'population', min: 0, max: 50, step: 1 },
-          { key: 'nativeAmericanPct', label: 'Native American', type: 'percent', field: 'nativeAmericanPopulation', percentOf: 'population', min: 0, max: 50, step: 1 },
-          { key: 'pacificIslanderPct', label: 'Pacific Islander', type: 'percent', field: 'pacificIslanderPopulation', percentOf: 'population', min: 0, max: 20, step: 1 },
-          { key: 'twoOrMorePct', label: 'Two or More Races', type: 'percent', field: 'twoOrMoreRacesPopulation', percentOf: 'population', min: 0, max: 30, step: 1 },
-          { key: 'otherRacePct', label: 'Other Race', type: 'percent', field: 'otherRacePopulation', percentOf: 'population', min: 0, max: 50, step: 1 },
+          { key: 'asianPct', label: 'Asian', type: 'percent', field: 'asianPopulation', percentOf: 'population', min: 0, max: 100, step: 1 },
+          { key: 'nativeAmericanPct', label: 'Native American', type: 'percent', field: 'nativeAmericanPopulation', percentOf: 'population', min: 0, max: 100, step: 1 },
+          { key: 'pacificIslanderPct', label: 'Pacific Islander', type: 'percent', field: 'pacificIslanderPopulation', percentOf: 'population', min: 0, max: 100, step: 1 },
+          { key: 'twoOrMorePct', label: 'Two or More Races', type: 'percent', field: 'twoOrMoreRacesPopulation', percentOf: 'population', min: 0, max: 100, step: 1 },
+          { key: 'otherRacePct', label: 'Other Race', type: 'percent', field: 'otherRacePopulation', percentOf: 'population', min: 0, max: 100, step: 1 },
         ]
       },
       {
         key: 'ethnicity',
         label: 'Ethnicity',
-        icon: '🌎',
+        icon: '',
         expanded: false,
         metrics: [
           { key: 'hispanicPct', label: 'Hispanic/Latino', type: 'percent', field: 'hispanicPopulation', percentOf: 'population', min: 0, max: 100, step: 1 },
@@ -166,41 +503,41 @@ export class MapComponent implements OnInit, AfterViewInit {
       {
         key: 'economic',
         label: 'Economic',
-        icon: '💰',
+        icon: '',
         expanded: false,
         metrics: [
           { key: 'medianHouseholdIncome', label: 'Median Household Income', type: 'currency', field: 'medianHouseholdIncome', min: 25000, max: 125000, step: 5000 },
           { key: 'perCapitaIncome', label: 'Per Capita Income', type: 'currency', field: 'perCapitaIncome', min: 15000, max: 75000, step: 2500 },
-          { key: 'povertyPct', label: 'Poverty Rate', type: 'percent', field: 'povertyTotal', percentOf: 'population', min: 0, max: 50, step: 1 },
+          { key: 'povertyPct', label: 'Poverty Rate', type: 'percent', field: 'povertyTotal', percentOf: 'population', min: 0, max: 100, step: 1 },
         ]
       },
       {
         key: 'employment',
         label: 'Employment',
-        icon: '💼',
+        icon: '',
         expanded: false,
         metrics: [
-          { key: 'unemploymentPct', label: 'Unemployment Rate', type: 'percent', field: 'unemployed', percentOf: 'laborForce', min: 0, max: 25, step: 1 },
-          { key: 'laborForcePct', label: 'Labor Force Participation', type: 'percent', field: 'laborForce', percentOf: 'population', min: 30, max: 80, step: 1 },
-          { key: 'workFromHomePct', label: 'Work From Home', type: 'percent', field: 'workFromHome', percentOf: 'employed', min: 0, max: 50, step: 1 },
+          { key: 'unemploymentPct', label: 'Unemployment Rate', type: 'percent', field: 'unemployed', percentOf: 'laborForce', min: 0, max: 100, step: 1 },
+          { key: 'laborForcePct', label: 'Labor Force Participation', type: 'percent', field: 'laborForce', percentOf: 'population', min: 0, max: 100, step: 1 },
+          { key: 'workFromHomePct', label: 'Work From Home', type: 'percent', field: 'workFromHome', percentOf: 'employed', min: 0, max: 100, step: 1 },
         ]
       },
       {
         key: 'education',
         label: 'Education',
-        icon: '🎓',
+        icon: '',
         expanded: false,
         metrics: [
-          { key: 'noHighSchoolPct', label: 'No High School', type: 'percent', field: 'eduNoHighSchool', percentOf: 'population', min: 0, max: 40, step: 1 },
-          { key: 'highSchoolOnlyPct', label: 'High School Only', type: 'percent', field: 'eduHighSchoolOnly', percentOf: 'population', min: 0, max: 50, step: 1 },
-          { key: 'bachelorsPct', label: "Bachelor's Degree+", type: 'percent', field: 'eduBachelors', percentOf: 'population', min: 0, max: 50, step: 1 },
-          { key: 'mastersPct', label: "Master's Degree+", type: 'percent', field: 'eduMasters', percentOf: 'population', min: 0, max: 30, step: 1 },
+          { key: 'noHighSchoolPct', label: 'No High School', type: 'percent', field: 'eduNoHighSchool', percentOf: 'population', min: 0, max: 100, step: 1 },
+          { key: 'highSchoolOnlyPct', label: 'High School Only', type: 'percent', field: 'eduHighSchoolOnly', percentOf: 'population', min: 0, max: 100, step: 1 },
+          { key: 'bachelorsPct', label: "Bachelor's Degree+", type: 'percent', field: 'eduBachelors', percentOf: 'population', min: 0, max: 100, step: 1 },
+          { key: 'mastersPct', label: "Master's Degree+", type: 'percent', field: 'eduMasters', percentOf: 'population', min: 0, max: 100, step: 1 },
         ]
       },
       {
         key: 'housing',
         label: 'Housing',
-        icon: '🏠',
+        icon: '',
         expanded: false,
         metrics: [
           { key: 'medianHomeValue', label: 'Median Home Value', type: 'currency', field: 'medianHomeValue', min: 50000, max: 500000, step: 25000 },
@@ -224,14 +561,17 @@ export class MapComponent implements OnInit, AfterViewInit {
       [37.0, -93.0]
     );
 
+    // Start more zoomed in on mobile
+    const initialZoom = this.isMobile ? 5 : 5.5;
+
     this.map = L.map('map', {
       center: [31.0, -100.0],
-      zoom: 5.5,
-      minZoom: 5.5,
+      zoom: initialZoom,
+      minZoom: 5,
       maxZoom: 12,
       maxBounds: texasBounds,
       maxBoundsViscosity: 1.0,
-      zoomControl: true,
+      zoomControl: !this.isMobile, // Hide zoom buttons on mobile
       dragging: true,
       touchZoom: true,
       scrollWheelZoom: true,
@@ -247,9 +587,22 @@ export class MapComponent implements OnInit, AfterViewInit {
     }).addTo(this.map);
 
     this.map.on('click', () => {
-      this.selectedCity = null;
+      if (this.selectedCity) {
+        this.selectedCity = null;
+        this.cityClassification = '';
+        this.updateSelectedCityMarker(); // Will fade out the overlay
+      }
       this.showListPanel = false;
+      this.mobileCardExpanded = false;
       this.cdr.detectChanges();
+    });
+
+    this.map.on('movestart', () => {
+      // Collapse card when user starts panning/zooming
+      if (this.isMobile && this.mobileCardExpanded) {
+        this.mobileCardExpanded = false;
+        this.cdr.detectChanges();
+      }
     });
 
     this.map.on('zoomend', () => {
@@ -274,6 +627,7 @@ export class MapComponent implements OnInit, AfterViewInit {
   }
 
   onYearChange(): void {
+    this.urbanIndexCache.clear();
     this.loadCitiesForYear();
     this.loadTexasStats(this.selectedYear);
   }
@@ -321,9 +675,14 @@ export class MapComponent implements OnInit, AfterViewInit {
 
   // Get the value for a metric from a city (handles percentages)
   getMetricValue(city: City, metric: FilterMetric): number {
+    // Special case: computed urbanization index
+    if (metric.key === 'urbanIndex') {
+      return this.getUrbanizationIndex(city) ?? 0;
+    }
+
     const rawValue = city[metric.field] as number;
     
-    if (metric.type === 'percent' && metric.percentOf) {
+    if ((metric.type === 'percent' || metric.type === 'balance') && metric.percentOf) {
       const total = city[metric.percentOf] as number;
       if (!total || total === 0) return 0;
       return (rawValue / total) * 100;
@@ -348,6 +707,28 @@ export class MapComponent implements OnInit, AfterViewInit {
   toggleCompleteData(): void {
     this.requireCompleteData = !this.requireCompleteData;
     this.applyFilters();
+  }
+
+  // Classification filter
+  toggleClassificationFilter(label: string): void {
+    if (this.classificationFilters.has(label)) {
+      this.classificationFilters.delete(label);
+    } else {
+      this.classificationFilters.add(label);
+    }
+    this.applyFilters();
+  }
+
+  isClassificationActive(label: string): boolean {
+    return this.classificationFilters.has(label);
+  }
+
+  private getCityClassificationLabel(city: City): string {
+    const index = this.getUrbanizationIndex(city);
+    if (index === null) return 'Rural';
+    if (index >= 73) return 'Urban';
+    if (index >= 37) return 'Suburban';
+    return 'Rural';
   }
 
   // Toggle list panel
@@ -387,12 +768,15 @@ export class MapComponent implements OnInit, AfterViewInit {
   // Select city from list and zoom to it
   selectCityFromList(city: City): void {
     this.selectedCity = city;
+    this.updateCityClassification();
     this.showListPanel = false;
+    this.mobileCardExpanded = false;
     
     if (city.latitude && city.longitude && this.map) {
       this.map.setView([city.latitude, city.longitude], 9, { animate: true });
     }
     
+    this.updateSelectedCityMarker(); // NEW: Update the selected marker
     this.cdr.detectChanges();
   }
 
@@ -403,6 +787,11 @@ export class MapComponent implements OnInit, AfterViewInit {
     // Apply complete data filter first if enabled
     if (this.requireCompleteData) {
       filtered = filtered.filter(city => this.hasCompleteData(city));
+    }
+
+    // Apply classification filter
+    if (this.classificationFilters.size > 0) {
+      filtered = filtered.filter(city => this.classificationFilters.has(this.getCityClassificationLabel(city)));
     }
     
     // Apply each active filter
@@ -461,21 +850,31 @@ export class MapComponent implements OnInit, AfterViewInit {
 
     this.visibleCities.forEach(city => {
       if (city.latitude && city.longitude) {
+        // Skip if this city is currently selected (the overlay handles it)
+        if (this.selectedCity && city.geoid === this.selectedCity.geoid) {
+          return;
+        }
+        
         const radius = this.getRadius(city);
+        const cityColor = this.getColorForCity(city);
         
         const marker = L.circleMarker([city.latitude, city.longitude], {
           radius: radius,
-          fillColor: this.getColorForCity(city),
+          fillColor: cityColor,
           color: '#fff',
           weight: 1,
           opacity: 1,
           fillOpacity: 0.7
         }).addTo(this.map);
 
+        // Store the color and radius on the marker for later use
+        (marker as any)._cityColor = cityColor;
+        (marker as any)._radius = radius;
+        (marker as any)._cityGeoid = city.geoid;
+
         marker.on('click', (e) => {
           L.DomEvent.stopPropagation(e);
-          this.selectedCity = city;
-          this.cdr.detectChanges();
+          this.selectCity(city);
         });
 
         marker.bindTooltip(
@@ -486,6 +885,357 @@ export class MapComponent implements OnInit, AfterViewInit {
         this.markers.push(marker);
       }
     });
+
+    // Update the selected city marker after adding regular markers
+    this.updateSelectedCityMarker();
+  }
+
+  // Handle city selection with animation
+  private selectCity(city: City): void {
+    // If we already have a selected city, do simultaneous transition
+    if (this.selectedCity && this.selectedCity.geoid !== city.geoid) {
+      // Re-add the old marker (for its fade out reveal, only if still visible)
+      if ((this as any)._hiddenMarkerData) {
+        const data = (this as any)._hiddenMarkerData;
+        if (data.marker && data.city && this.visibleCities.some((c: City) => c.geoid === data.city.geoid)) {
+          data.marker.addTo(this.map);
+        }
+        (this as any)._hiddenMarkerData = null;
+      }
+      
+      // Fade out the old overlay
+      if ((this as any)._animatedRing) {
+        const oldRing = (this as any)._animatedRing;
+        const oldElement = oldRing.getElement() as HTMLElement | undefined;
+        if (oldElement) {
+          const svg = oldElement.querySelector('svg') as SVGElement | null;
+          if (svg) {
+            const mainCircle = svg.querySelector('.main-circle') as SVGCircleElement | null;
+            const gradientRing = svg.querySelector('.gradient-ring') as SVGCircleElement | null;
+            
+            if (mainCircle) {
+              mainCircle.style.transition = 'fill-opacity 250ms ease-out';
+              mainCircle.style.fillOpacity = '0';
+            }
+            if (gradientRing) {
+              gradientRing.style.transition = 'opacity 250ms ease-out';
+              gradientRing.style.opacity = '0';
+            }
+            
+            // Remove after fade
+            setTimeout(() => oldRing.remove(), 260);
+          } else {
+            oldRing.remove();
+          }
+        } else {
+          oldRing.remove();
+        }
+        (this as any)._animatedRing = null;
+        (this as any)._animatedRingCityGeoid = null;
+      }
+      
+      // Immediately start the new city's transition (no waiting)
+      this.selectedCity = city;
+      this.updateCityClassification();
+      this.mobileCardExpanded = false;
+      this.createSelectedCityOverlay();
+      this.cdr.detectChanges();
+    } else {
+      // No previous selection, just select
+      this.selectedCity = city;
+      this.updateCityClassification();
+      this.mobileCardExpanded = false;
+      this.updateSelectedCityMarker();
+      this.cdr.detectChanges();
+    }
+  }
+  
+  // Create the overlay for the selected city (extracted for reuse)
+  private createSelectedCityOverlay(): void {
+    if (!this.selectedCity || !this.selectedCity.latitude || !this.selectedCity.longitude) {
+      return;
+    }
+
+    // Check if the selected city is in visible cities
+    const isInVisible = this.visibleCities.some(c => c.geoid === this.selectedCity!.geoid);
+
+    // Find the underlying marker for this city (to hide after fade in)
+    const underlyingMarker = this.markers.find(m => (m as any)._cityGeoid === this.selectedCity!.geoid);
+
+    // Base radius
+    const baseRadius = isInVisible ? this.getRadius(this.selectedCity) : 10;
+    const strokeWidth = 3;
+    const svgSize = (baseRadius + strokeWidth + 4) * 2;
+    const center = svgSize / 2;
+
+    // Create SVG overlay
+    const svgHtml = `
+      <svg width="${svgSize}" height="${svgSize}" viewBox="0 0 ${svgSize} ${svgSize}" 
+           style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);">
+        <defs>
+          <linearGradient id="blueGradient-${this.selectedCity.geoid}" gradientUnits="userSpaceOnUse" 
+            x1="${center - baseRadius}" y1="${center}" 
+            x2="${center + baseRadius}" y2="${center}">
+            <stop offset="0%" stop-color="#1a5276"/>
+            <stop offset="50%" stop-color="#3498db"/>
+            <stop offset="100%" stop-color="#85c1e9"/>
+          </linearGradient>
+        </defs>
+        
+        <circle 
+          class="main-circle"
+          cx="${center}" 
+          cy="${center}" 
+          r="${baseRadius}" 
+          fill="white"
+          fill-opacity="0"
+          stroke="none"
+          style="transition: fill-opacity 250ms ease-in;"
+        />
+        
+        <g>
+          <animateTransform 
+            attributeName="transform" 
+            type="rotate" 
+            from="0 ${center} ${center}" 
+            to="360 ${center} ${center}" 
+            dur="3s" 
+            repeatCount="indefinite"
+          />
+          <circle 
+            class="gradient-ring"
+            cx="${center}" 
+            cy="${center}" 
+            r="${baseRadius + 1}" 
+            fill="none"
+            stroke="url(#blueGradient-${this.selectedCity.geoid})" 
+            stroke-width="${strokeWidth}"
+            opacity="0"
+            style="transition: opacity 250ms ease-in;"
+          />
+        </g>
+      </svg>
+    `;
+
+    const animatedIcon = L.divIcon({
+      html: svgHtml,
+      className: 'selected-city-animated-ring',
+      iconSize: [svgSize, svgSize],
+      iconAnchor: [svgSize / 2, svgSize / 2]
+    });
+
+    const animatedRing = L.marker(
+      [this.selectedCity.latitude, this.selectedCity.longitude],
+      { icon: animatedIcon, interactive: false }
+    ).addTo(this.map);
+
+    // Fade in
+    setTimeout(() => {
+      const element = animatedRing.getElement() as HTMLElement | undefined;
+      if (element) {
+        const mainCircle = element.querySelector('.main-circle') as SVGCircleElement | null;
+        const gradientRing = element.querySelector('.gradient-ring') as SVGCircleElement | null;
+        
+        if (mainCircle) {
+          mainCircle.style.fillOpacity = '1';
+        }
+        if (gradientRing) {
+          gradientRing.style.opacity = '1';
+        }
+      }
+    }, 10);
+
+    // After fade in completes, remove the underlying marker
+    if (underlyingMarker) {
+      setTimeout(() => {
+        underlyingMarker.remove();
+        (this as any)._hiddenMarkerData = {
+          city: this.selectedCity,
+          marker: underlyingMarker
+        };
+      }, 260);
+    }
+
+    (this as any)._animatedRing = animatedRing;
+    (this as any)._animatedRingCityGeoid = this.selectedCity.geoid;
+  }
+
+  // Create/update an SVG overlay for the selected city (doesn't hide the original marker)
+  private updateSelectedCityMarker(): void {
+    // If no city is selected, fade out and remove existing overlay
+    if (!this.selectedCity || !this.selectedCity.latitude || !this.selectedCity.longitude) {
+      // First, re-add the old marker before fading out (only if city is still in visible results)
+      if ((this as any)._hiddenMarkerData) {
+        const data = (this as any)._hiddenMarkerData;
+        if (data.marker && data.city && this.visibleCities.some((c: City) => c.geoid === data.city.geoid)) {
+          data.marker.addTo(this.map);
+        }
+        (this as any)._hiddenMarkerData = null;
+      }
+      
+      if ((this as any)._animatedRing) {
+        const oldRing = (this as any)._animatedRing;
+        const oldElement = oldRing.getElement() as HTMLElement | undefined;
+        if (oldElement) {
+          const svg = oldElement.querySelector('svg') as SVGElement | null;
+          if (svg) {
+            // Fade out the white fill to reveal colored marker underneath (slower - 350ms)
+            const mainCircle = svg.querySelector('.main-circle') as SVGCircleElement | null;
+            const gradientRing = svg.querySelector('.gradient-ring') as SVGCircleElement | null;
+            
+            if (mainCircle) {
+              mainCircle.style.transition = 'fill-opacity 350ms ease-out';
+              mainCircle.style.fillOpacity = '0';
+            }
+            if (gradientRing) {
+              gradientRing.style.transition = 'opacity 350ms ease-out';
+              gradientRing.style.opacity = '0';
+            }
+            
+            setTimeout(() => oldRing.remove(), 360);
+          } else {
+            oldRing.remove();
+          }
+        } else {
+          oldRing.remove();
+        }
+        (this as any)._animatedRing = null;
+        (this as any)._animatedRingCityGeoid = null;
+      }
+      
+      if (this.selectedCityMarker) {
+        this.selectedCityMarker.remove();
+        this.selectedCityMarker = null;
+      }
+      return;
+    }
+
+    // If overlay already exists for this city, don't recreate it
+    if ((this as any)._animatedRing && (this as any)._animatedRingCityGeoid === this.selectedCity.geoid) {
+      return;
+    }
+
+    // Remove existing without animation if we're replacing
+    if ((this as any)._animatedRing) {
+      (this as any)._animatedRing.remove();
+      (this as any)._animatedRing = null;
+      (this as any)._animatedRingCityGeoid = null;
+    }
+    if (this.selectedCityMarker) {
+      this.selectedCityMarker.remove();
+      this.selectedCityMarker = null;
+    }
+
+    // Check if the selected city is in visible cities
+    const isInVisible = this.visibleCities.some(c => c.geoid === this.selectedCity!.geoid);
+
+    // Find the underlying marker for this city (to hide after fade in)
+    const underlyingMarker = this.markers.find(m => (m as any)._cityGeoid === this.selectedCity!.geoid);
+
+    // Base radius
+    const baseRadius = isInVisible ? this.getRadius(this.selectedCity) : 10;
+    const strokeWidth = 3;
+    const svgSize = (baseRadius + strokeWidth + 4) * 2;
+    const center = svgSize / 2;
+
+    // Create SVG overlay - white fill starts transparent, fades in to cover the colored marker
+    const svgHtml = `
+      <svg width="${svgSize}" height="${svgSize}" viewBox="0 0 ${svgSize} ${svgSize}" 
+           style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);">
+        <defs>
+          <linearGradient id="blueGradient-${this.selectedCity.geoid}" gradientUnits="userSpaceOnUse" 
+            x1="${center - baseRadius}" y1="${center}" 
+            x2="${center + baseRadius}" y2="${center}">
+            <stop offset="0%" stop-color="#1a5276"/>
+            <stop offset="50%" stop-color="#3498db"/>
+            <stop offset="100%" stop-color="#85c1e9"/>
+          </linearGradient>
+        </defs>
+        
+        <!-- White circle overlay - starts transparent, fades in -->
+        <circle 
+          class="main-circle"
+          cx="${center}" 
+          cy="${center}" 
+          r="${baseRadius}" 
+          fill="white"
+          fill-opacity="0"
+          stroke="none"
+          style="transition: fill-opacity 250ms ease-in;"
+        />
+        
+        <!-- Rotating gradient ring -->
+        <g>
+          <animateTransform 
+            attributeName="transform" 
+            type="rotate" 
+            from="0 ${center} ${center}" 
+            to="360 ${center} ${center}" 
+            dur="3s" 
+            repeatCount="indefinite"
+          />
+          <circle 
+            class="gradient-ring"
+            cx="${center}" 
+            cy="${center}" 
+            r="${baseRadius + 1}" 
+            fill="none"
+            stroke="url(#blueGradient-${this.selectedCity.geoid})" 
+            stroke-width="${strokeWidth}"
+            opacity="0"
+            style="transition: opacity 250ms ease-in;"
+          />
+        </g>
+      </svg>
+    `;
+
+    const animatedIcon = L.divIcon({
+      html: svgHtml,
+      className: 'selected-city-animated-ring',
+      iconSize: [svgSize, svgSize],
+      iconAnchor: [svgSize / 2, svgSize / 2]
+    });
+
+    const animatedRing = L.marker(
+      [this.selectedCity.latitude, this.selectedCity.longitude],
+      { icon: animatedIcon, interactive: false }
+    ).addTo(this.map);
+
+    // Fade in the white fill and gradient ring
+    setTimeout(() => {
+      const element = animatedRing.getElement() as HTMLElement | undefined;
+      if (element) {
+        const mainCircle = element.querySelector('.main-circle') as SVGCircleElement | null;
+        const gradientRing = element.querySelector('.gradient-ring') as SVGCircleElement | null;
+        
+        if (mainCircle) {
+          mainCircle.style.fillOpacity = '1';
+        }
+        if (gradientRing) {
+          gradientRing.style.opacity = '1';
+        }
+      }
+    }, 10);
+
+    // After fade in completes, remove the underlying marker entirely
+    if (underlyingMarker) {
+      setTimeout(() => {
+        underlyingMarker.remove();
+        (this as any)._hiddenMarkerData = {
+          city: this.selectedCity,
+          marker: underlyingMarker
+        };
+      }, 260); // Right when fade completes
+    }
+
+    (this as any)._animatedRing = animatedRing;
+    (this as any)._animatedRingCityGeoid = this.selectedCity.geoid;
+
+    // Dummy marker for tracking
+    this.selectedCityMarker = L.circleMarker(
+      [this.selectedCity.latitude, this.selectedCity.longitude],
+      { radius: 0, opacity: 0, fillOpacity: 0 }
+    );
   }
 
   // Dynamic radius based on selected size metric
@@ -590,6 +1340,11 @@ export class MapComponent implements OnInit, AfterViewInit {
     return null;
   }
 
+  // Get metrics suitable for color/size dropdowns (exclude balance type)
+  getDropdownMetrics(category: FilterCategory): FilterMetric[] {
+    return category.metrics.filter(m => m.type !== 'balance');
+  }
+
   // Toggle category expansion
   toggleCategory(category: FilterCategory): void {
     category.expanded = !category.expanded;
@@ -636,7 +1391,9 @@ export class MapComponent implements OnInit, AfterViewInit {
   // Set filter min value
   setFilterMin(metric: FilterMetric, value: number): void {
     const current = this.filterValues.get(metric.key) || { min: metric.min, max: metric.max };
-    current.min = Math.min(value, current.max); // Don't exceed max
+    // Clamp: can't go below metric.min or above current.max - step
+    const clampedValue = Math.max(metric.min, Math.min(value, current.max - metric.step));
+    current.min = clampedValue;
     this.filterValues.set(metric.key, current);
     this.onFilterChange(metric);
   }
@@ -644,7 +1401,9 @@ export class MapComponent implements OnInit, AfterViewInit {
   // Set filter max value
   setFilterMax(metric: FilterMetric, value: number): void {
     const current = this.filterValues.get(metric.key) || { min: metric.min, max: metric.max };
-    current.max = Math.max(value, current.min); // Don't go below min
+    // Clamp: can't go above metric.max or below current.min + step
+    const clampedValue = Math.min(metric.max, Math.max(value, current.min + metric.step));
+    current.max = clampedValue;
     this.filterValues.set(metric.key, current);
     this.onFilterChange(metric);
   }
@@ -659,9 +1418,14 @@ export class MapComponent implements OnInit, AfterViewInit {
     return category.metrics.filter(m => this.activeFilters.has(m.key)).length;
   }
 
+  getTotalFilterCount(): number {
+    return this.activeFilters.size + this.classificationFilters.size;
+  }
+
   // Clear all filters
   clearAllFilters(): void {
     this.activeFilters.clear();
+    this.classificationFilters.clear();
     
     // Reset all filter values to defaults
     this.filterCategories.forEach(cat => {
@@ -810,6 +1574,366 @@ export class MapComponent implements OnInit, AfterViewInit {
 
   closePanel(): void {
     this.selectedCity = null;
+    this.cityClassification = '';
+    this.updateSelectedCityMarker(); // NEW
+  }
+
+  getCityDisplayName(city: City): string {
+    return city.name.replace(' city', '').replace(' town', '');
+  }
+
+  getCityNameFontSize(city: City): string {
+    const name = this.getCityDisplayName(city);
+    const len = name.length;
+    if (len <= 10) return '1.5rem';
+    if (len <= 14) return '1.3rem';
+    if (len <= 18) return '1.15rem';
+    if (len <= 22) return '1.0rem';
+    return '0.9rem';
+  }
+
+  // Continuous Urbanization Index (0-100) for history charting
+  private urbanIndexCache: Map<string, number | null> = new Map();
+
+  getUrbanizationIndex(city: City): number | null {
+    if (!city.population) return null;
+
+    // Cache key: geoid + year (population changes per year)
+    const cacheKey = (city.geoid || '') + '-' + (city.year || 0);
+    if (this.urbanIndexCache.has(cacheKey)) {
+      return this.urbanIndexCache.get(cacheKey)!;
+    }
+
+    // Density component (0-100): log scale
+    // 100→0, 1000→30, 3000→60, 10000+→100
+    const density = (city.landAreaSqMi && city.landAreaSqMi > 0) ? city.population / city.landAreaSqMi : 0;
+    const densityScore = density > 0
+      ? Math.min(100, Math.max(0, (Math.log10(density) - 2.0) / (4.0 - 2.0) * 100))
+      : 0;
+
+    // Population component (0-100): log scale, steeper separation
+    // 1000→0, 50k→35, 200k→60, 500k→75, 2M+→100
+    const popScore = city.population > 0
+      ? Math.min(100, Math.max(0, (Math.log10(city.population) - 3.0) / (6.3 - 3.0) * 100))
+      : 0;
+
+    // Metro proximity component (0-100): smaller influence
+    let proxScore = 0;
+    if (city.latitude && city.longitude) {
+      let minDist = Infinity;
+      for (const m of this.texasMetros) {
+        const d = this.haversineDistance(city.latitude, city.longitude, m.lat, m.lng);
+        if (d < minDist) minDist = d;
+      }
+      proxScore = Math.max(0, Math.min(100, (1 - minDist / 80) * 100));
+    }
+
+    // Income ratio component: per capita / household income
+    // Higher ratio = more urban economic character (single earners, diverse workforce)
+    // Suburbs with dual-income families: ~0.35-0.42, Urban centers: ~0.45-0.65
+    let incomeScore = 50; // neutral default
+    if (city.medianHouseholdIncome && city.medianHouseholdIncome > 0 &&
+        city.perCapitaIncome && city.perCapitaIncome > 0) {
+      const ratio = city.perCapitaIncome / city.medianHouseholdIncome;
+      incomeScore = Math.min(100, Math.max(0, (ratio - 0.25) / (0.70 - 0.25) * 100));
+    }
+
+    // Weighted: population 50%, density 20%, income ratio 15%, proximity 15%
+    const result = popScore * 0.50 + densityScore * 0.20 + incomeScore * 0.15 + proxScore * 0.15;
+    this.urbanIndexCache.set(cacheKey, result);
+    return result;
+  }
+
+  private haversineDistance(lat1: number, lng1: number, lat2: number, lng2: number): number {
+    const dLat = (lat2 - lat1) * Math.PI / 180;
+    const dLng = (lng2 - lng1) * Math.PI / 180;
+    const a = Math.sin(dLat / 2) ** 2 + Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLng / 2) ** 2;
+    return 3959 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  }
+
+  // City Classification
+  private readonly texasMetros = [
+    { lat: 29.7604, lng: -95.3698 },  // Houston
+    { lat: 32.7767, lng: -96.7970 },  // Dallas
+    { lat: 29.4241, lng: -98.4936 },  // San Antonio
+    { lat: 30.2672, lng: -97.7431 },  // Austin
+    { lat: 32.7555, lng: -97.3308 },  // Fort Worth
+    { lat: 31.7619, lng: -106.4850 }, // El Paso
+    { lat: 27.8006, lng: -97.3964 },  // Corpus Christi
+    { lat: 33.5779, lng: -101.8552 }, // Lubbock
+    { lat: 35.2220, lng: -101.8313 }, // Amarillo
+    { lat: 26.2034, lng: -98.2300 },  // McAllen
+    { lat: 25.9017, lng: -97.4975 },  // Brownsville
+    { lat: 27.5036, lng: -99.5076 },  // Laredo
+    { lat: 31.9973, lng: -102.0779 }, // Midland
+  ];
+
+  private updateCityClassification(): void {
+    if (!this.selectedCity) {
+      this.cityClassification = '';
+      return;
+    }
+    this.cityClassification = this.getCityClassificationLabel(this.selectedCity);
+  }
+
+  // History Panel Methods
+  openHistoryPanel(): void {
+    this.showHistoryPanel = true;
+    this.historyLoading = true;
+    this.historyData = [];
+    
+    if (this.selectedCity) {
+      // City-level history - single API call
+      this.cityService.getCityHistory(this.selectedCity.geoid).subscribe({
+        next: (data) => {
+          this.historyData = data.sort((a, b) => a.year - b.year);
+          this.historyLoading = false;
+          setTimeout(() => this.createAllHistoryCharts(), 50);
+        },
+        error: (err: Error) => {
+          console.error('Error loading city history:', err);
+          this.historyLoading = false;
+        }
+      });
+    } else {
+      // Texas-wide history - loop through years 2012-2024
+      const years = Array.from({ length: 13 }, (_, i) => 2012 + i);
+      const requests = years.map(y => this.cityService.getTexasStats(y));
+      
+      forkJoin(requests).subscribe({
+        next: (results) => {
+          this.historyData = results.map((stats: any, i: number) => this.texasStatsToCity(stats, years[i]))
+            .sort((a, b) => a.year - b.year);
+          this.historyLoading = false;
+          setTimeout(() => this.createAllHistoryCharts(), 50);
+        },
+        error: (err: Error) => {
+          console.error('Error loading Texas history:', err);
+          this.historyLoading = false;
+        }
+      });
+    }
+  }
+
+  // Convert texasStats response to City-shaped object for chart reuse
+  private texasStatsToCity(stats: any, year: number): City {
+    return {
+      year,
+      geoid: 'texas',
+      name: 'Texas',
+      population: stats.totalPopulation,
+      medianAge: stats.medianAge,
+      medianHouseholdIncome: stats.medianHouseholdIncome,
+      perCapitaIncome: stats.perCapitaIncome,
+      medianHomeValue: stats.medianHomeValue,
+      medianRent: stats.medianRent,
+      ownerOccupied: stats.ownerOccupied,
+      renterOccupied: stats.renterOccupied,
+      employed: stats.employed,
+      unemployed: stats.unemployed,
+      laborForce: stats.laborForce,
+      workFromHome: stats.workFromHome,
+      malePopulation: stats.totalMale,
+      femalePopulation: stats.totalFemale,
+      whitePopulation: stats.whitePopulation,
+      blackPopulation: stats.blackPopulation,
+      asianPopulation: stats.asianPopulation,
+      hispanicPopulation: stats.hispanicPopulation,
+      nativeAmericanPopulation: stats.nativeAmericanPopulation,
+      pacificIslanderPopulation: stats.pacificIslanderPopulation,
+      twoOrMoreRacesPopulation: stats.twoOrMoreRacesPopulation,
+      otherRacePopulation: stats.otherRacePopulation,
+      latitude: 31.0,
+      longitude: -100.0,
+      landAreaSqMi: 268596,
+    } as City;
+  }
+
+  closeHistoryPanel(): void {
+    this.showHistoryPanel = false;
+    this.destroyAllHistoryCharts();
+  }
+
+  private historyChartInstances: any[] = [];
+
+  private destroyAllHistoryCharts(): void {
+    this.historyChartInstances.forEach(chart => {
+      if (chart) chart.destroy();
+    });
+    this.historyChartInstances = [];
+  }
+
+  private getMetricColor(key: string): string {
+    const colors: { [k: string]: string } = {
+      population: '#3498db', medianAge: '#e67e22',
+      medianHouseholdIncome: '#27ae60', perCapitaIncome: '#2ecc71',
+      medianHomeValue: '#9b59b6', medianRent: '#1abc9c', ownershipRate: '#16a085',
+      unemploymentRate: '#e74c3c', laborForcePct: '#3498db', workFromHomePct: '#1abc9c',
+      malePct: '#3498db', femalePct: '#e91e8c',
+      whitePct: '#95a5a6', blackPct: '#2c3e50', asianPct: '#e74c3c',
+      nativeAmericanPct: '#8e44ad', pacificIslanderPct: '#1abc9c', twoOrMorePct: '#f39c12', otherRacePct: '#7f8c8d',
+      hispanicPct: '#e67e22',
+      urbanIndex: '#2c3e50',
+    };
+    return colors[key] || '#3498db';
+  }
+
+  private createAllHistoryCharts(): void {
+    this.destroyAllHistoryCharts();
+    
+    if (!this.historyData.length) return;
+
+    const years = this.historyData.map(d => d.year);
+
+    this.historyMetrics.forEach(metric => {
+      // Skip urbanization index for Texas overall (no meaningful city-level data)
+      if (metric.key === 'urbanIndex' && !this.selectedCity) return;
+
+      const canvas = document.getElementById('chart-' + metric.key) as HTMLCanvasElement;
+      if (!canvas) return;
+
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+
+      const data = this.historyData.map(d => metric.getValue(d));
+      const color = this.getMetricColor(metric.key);
+
+      // Special config for urbanization index chart
+      const isUrbanIndex = metric.key === 'urbanIndex';
+      
+      // Zone background plugin for urbanization chart
+      const zoneBgPlugin = isUrbanIndex ? {
+        id: 'zoneBg',
+        beforeDraw: (chart: any) => {
+          const { ctx, chartArea, scales } = chart;
+          if (!chartArea || !scales?.y) return;
+          const yScale = scales.y;
+          const left = chartArea.left;
+          const right = chartArea.right;
+
+          // Rural zone: 0-37 (brownish)
+          const ruralTop = yScale.getPixelForValue(37);
+          const ruralBottom = yScale.getPixelForValue(0);
+          ctx.fillStyle = 'rgba(160, 120, 80, 0.10)';
+          ctx.fillRect(left, ruralTop, right - left, ruralBottom - ruralTop);
+
+          // Suburban zone: 37-75 (yellowish)
+          const subTop = yScale.getPixelForValue(73);
+          const subBottom = yScale.getPixelForValue(37);
+          ctx.fillStyle = 'rgba(241, 196, 15, 0.10)';
+          ctx.fillRect(left, subTop, right - left, subBottom - subTop);
+
+          // Urban zone: 75-100 (greenish)
+          const urbTop = yScale.getPixelForValue(100);
+          const urbBottom = yScale.getPixelForValue(73);
+          ctx.fillStyle = 'rgba(39, 174, 96, 0.10)';
+          ctx.fillRect(left, urbTop, right - left, urbBottom - urbTop);
+
+          // Zone labels
+          ctx.font = '10px sans-serif';
+          ctx.fillStyle = 'rgba(160, 120, 80, 0.5)';
+          ctx.fillText('Rural', left + 4, ruralBottom - 6);
+          ctx.fillStyle = 'rgba(180, 150, 10, 0.5)';
+          ctx.fillText('Suburban', left + 4, subBottom - 6);
+          ctx.fillStyle = 'rgba(39, 174, 96, 0.5)';
+          ctx.fillText('Urban', left + 4, urbBottom - 6);
+        }
+      } : null;
+
+      const chartConfig: any = {
+        type: 'line',
+        data: {
+          labels: years,
+          datasets: [{
+            label: metric.label,
+            data: data,
+            borderColor: color,
+            backgroundColor: isUrbanIndex ? 'transparent' : color + '20',
+            borderWidth: 2.5,
+            fill: !isUrbanIndex,
+            tension: 0.3,
+            pointRadius: 4,
+            pointHoverRadius: 7,
+            pointBackgroundColor: color,
+            pointBorderColor: '#fff',
+            pointBorderWidth: 2
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          animation: {
+            duration: 400,
+            easing: 'easeOutQuart'
+          },
+          plugins: {
+            legend: { display: false },
+            tooltip: {
+              backgroundColor: '#2c3e50',
+              titleFont: { size: 13 },
+              bodyFont: { size: 13 },
+              padding: 12,
+              cornerRadius: 8,
+              callbacks: {
+                label: (context: any) => ' ' + metric.format(context.raw)
+              }
+            }
+          },
+          scales: {
+            x: {
+              grid: { display: false },
+              ticks: { font: { size: 11 }, color: '#6c757d' }
+            },
+            y: {
+              min: isUrbanIndex ? 0 : undefined,
+              max: isUrbanIndex ? 100 : undefined,
+              grid: { color: isUrbanIndex ? 'transparent' : '#f0f0f0' },
+              ticks: {
+                font: { size: 11 },
+                color: '#6c757d',
+                callback: (value: number) => metric.yFormat(value)
+              }
+            }
+          }
+        }
+      };
+
+      // Add zone background plugin for urbanization chart
+      if (zoneBgPlugin) {
+        chartConfig.plugins = [zoneBgPlugin];
+      }
+
+      const chart = new (window as any).Chart(ctx, chartConfig);
+
+      this.historyChartInstances.push(chart);
+    });
+  }
+
+  getMetricChange(metric: any): { value: string; positive: boolean } | null {
+    if (this.historyData.length < 2) return null;
+    
+    const first = metric.getValue(this.historyData[0]);
+    const last = metric.getValue(this.historyData[this.historyData.length - 1]);
+    
+    if (!first || !last) return null;
+    
+    const change = ((last - first) / Math.abs(first)) * 100;
+    return {
+      value: (change >= 0 ? '+' : '') + change.toFixed(1) + '%',
+      positive: change >= 0
+    };
+  }
+
+  getHistoryMetricCategories(): string[] {
+    const cats: string[] = [];
+    this.historyMetrics.forEach(m => {
+      if (!cats.includes(m.category)) cats.push(m.category);
+    });
+    return cats;
+  }
+
+  getHistoryMetricsByCategory(category: string) {
+    return this.historyMetrics.filter(m => m.category === category);
   }
 
   onSearchInput(): void {
@@ -837,13 +1961,16 @@ export class MapComponent implements OnInit, AfterViewInit {
 
   selectSearchResult(city: City): void {
     this.selectedCity = city;
+    this.updateCityClassification();
     this.searchQuery = '';
     this.searchResults = [];
+    this.mobileCardExpanded = false;
     
     if (city.latitude && city.longitude && this.map) {
       this.map.setView([city.latitude, city.longitude], 9, { animate: true });
     }
     
+    this.updateSelectedCityMarker(); // NEW: Show the selected marker
     this.cdr.detectChanges();
   }
 }

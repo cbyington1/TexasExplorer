@@ -7,7 +7,7 @@ import { City } from './city.model';
   providedIn: 'root'
 })
 export class CityService {
-  private apiUrl = 'http://localhost:8080/api/cities';
+  private apiUrl = 'https://texasexplorer-production.up.railway.app/api/cities';
 
   constructor(private http: HttpClient) {}
 
@@ -59,6 +59,6 @@ export class CityService {
 
   // Get Texas-wide statistics for a year
   getTexasStats(year: number): Observable<any> {
-    return this.http.get<any>(`http://localhost:8080/api/texas-stats/${year}`);
+    return this.http.get<any>(`https://texasexplorer-production.up.railway.app/api/texas-stats/${year}`);
   }
 }
