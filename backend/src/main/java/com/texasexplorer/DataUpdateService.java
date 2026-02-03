@@ -25,6 +25,9 @@ public class DataUpdateService {
     @Autowired
     private com.texasexplorer.stats.TexasStatsService texasStatsService;
 
+    @Autowired
+    private com.texasexplorer.derived.DerivedStatsService derivedStatsService;
+
     // Census ACS 5-year data became available starting in 2009
     private static final int EARLIEST_AVAILABLE_YEAR = 2009;
     
@@ -143,6 +146,15 @@ public class DataUpdateService {
                 log("  Texas stats saved for " + year);
             } catch (Exception e) {
                 logError("  Failed to calculate Texas stats for " + year + ": " + e.getMessage());
+            }
+
+            // Calculate and save derived classification for this year
+            log("  Calculating classification for " + year + "...");
+            try {
+                derivedStatsService.calculateAndSaveClassificationForYear(year);
+                log("  Classification saved for " + year);
+            } catch (Exception e) {
+                logError("  Failed to calculate classification for " + year + ": " + e.getMessage());
             }
             
             // Show top 5 for verification
