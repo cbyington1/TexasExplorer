@@ -13,9 +13,6 @@ import java.util.*;
  * This is the single home for any logic that transforms Census data
  * into new insights — classification, trends, indexes, scores, etc.
  * 
- * Classification: stored in derived_stats table (needed on every map load).
- * Trends: computed on the fly (comparing any two years of raw city data).
- * 
  * New derived computations should be added here over time.
  */
 @Service
@@ -29,7 +26,6 @@ public class DerivedStatsService {
 
     // ============================================================
     // TEXAS METRO REFERENCE CITIES (for proximity calculation)
-    // Regional hubs with 100k+ that aren't satellites of something bigger.
     // ============================================================
     private static final double[][] TEXAS_METROS = {
         {29.7604, -95.3698},   // Houston
@@ -51,35 +47,43 @@ public class DerivedStatsService {
     private static final double URBAN_THRESHOLD = 73.0;
     private static final double SUBURBAN_THRESHOLD = 37.0;
 
+    // Population floor: any city at or above this is automatically Urban
+    private static final int URBAN_POPULATION_FLOOR = 250000;
+
+    // Regional dominance: if a city is the largest within this radius (miles)
+    // AND above the minimum population, it gets boosted to Urban
+    private static final double REGIONAL_DOMINANCE_RADIUS_MILES = 60.0;
+    private static final int REGIONAL_DOMINANCE_MIN_POPULATION = 75000;
+
     // ============================================================
-    // PUBLIC API — CLASSIFICATION (stored)
+    // PUBLIC API
     // ============================================================
 
     /**
-     * Get classification data for a year — returns from DB if already computed,
+     * Get derived stats for a year — returns from DB if already computed,
      * otherwise computes and saves first.
      */
-    public List<DerivedStats> getClassificationForYear(Integer year) {
+    public List<DerivedStats> getStatsForYear(Integer year) {
         if (derivedStatsRepository.existsByYear(year)) {
             return derivedStatsRepository.findByYear(year);
         }
-        return calculateAndSaveClassificationForYear(year);
+        return calculateAndSaveForYear(year);
     }
 
     /**
-     * Get classification history for a single city across all years.
+     * Get derived stats history for a single city across all years.
      */
-    public List<DerivedStats> getCityClassificationHistory(String geoid) {
+    public List<DerivedStats> getCityHistory(String geoid) {
         return derivedStatsRepository.findByGeoidOrderByYearAsc(geoid);
     }
 
     /**
-     * Calculate and persist classification for all cities in a given year.
+     * Calculate and persist derived stats for all cities in a given year.
      * Called after city data is loaded.
      */
     @Transactional
-    public List<DerivedStats> calculateAndSaveClassificationForYear(Integer year) {
-        log("Calculating classification for year " + year);
+    public List<DerivedStats> calculateAndSaveForYear(Integer year) {
+        log("Calculating derived stats for year " + year);
 
         List<City> cities = cityRepository.findByYearOrderByPopulationDesc(year);
         if (cities.isEmpty()) {
@@ -87,184 +91,134 @@ public class DerivedStatsService {
             return Collections.emptyList();
         }
 
+        // Load base year data for trend calculations
+        // Find the earliest year available in the database
+        List<Integer> allYears = cityRepository.findAllYears();
+        Integer baseYear = allYears.isEmpty() ? null : allYears.get(0);
+
+        // Build a lookup map of base year cities by geoid (only if base year != current year)
+        Map<String, City> baseYearMap = new HashMap<>();
+        if (baseYear != null && !baseYear.equals(year)) {
+            List<City> baseCities = cityRepository.findByYearOrderByPopulationDesc(baseYear);
+            for (City c : baseCities) {
+                if (c.getGeoid() != null) {
+                    baseYearMap.put(c.getGeoid(), c);
+                }
+            }
+            log("Loaded " + baseYearMap.size() + " base year (" + baseYear + ") cities for trend comparison");
+        }
+
+        // Pre-compute regional dominance: for each city, determine if it's the
+        // largest city within REGIONAL_DOMINANCE_RADIUS_MILES
+        Set<String> regionallyDominant = computeRegionallyDominantCities(cities);
+        log("Found " + regionallyDominant.size() + " regionally dominant cities");
+
+        // Compute derived stats for each city
         List<DerivedStats> results = new ArrayList<>();
         for (City city : cities) {
             if (city.getGeoid() == null) continue;
 
             DerivedStats ds = new DerivedStats(city.getGeoid(), year);
-            computeClassification(ds, city);
+
+            // Classification (now with population floor + regional dominance)
+            boolean isDominant = regionallyDominant.contains(city.getGeoid());
+            computeClassification(ds, city, isDominant);
+
+            // Trends (skip if this IS the base year — no delta to compute)
+            if (baseYear != null && !baseYear.equals(year)) {
+                City baseCity = baseYearMap.get(city.getGeoid());
+                if (baseCity != null) {
+                    computeTrends(ds, city, baseCity, baseYear);
+                }
+            }
+
             results.add(ds);
         }
 
+        // Batch save
         derivedStatsRepository.saveAll(results);
-        log("Saved " + results.size() + " classification records for year " + year);
+        log("Saved " + results.size() + " derived stats for year " + year);
 
         return results;
     }
 
     /**
-     * Recalculate classification for a year (delete existing first).
+     * Recalculate for a year (delete existing first).
      */
     @Transactional
-    public List<DerivedStats> recalculateClassificationForYear(Integer year) {
+    public List<DerivedStats> recalculateForYear(Integer year) {
         derivedStatsRepository.deleteByYear(year);
-        return calculateAndSaveClassificationForYear(year);
+        return calculateAndSaveForYear(year);
     }
 
     /**
-     * Recalculate classification for all years.
+     * Recalculate all years.
      */
     @Transactional
-    public void recalculateAllClassifications() {
+    public void recalculateAll() {
         List<Integer> years = cityRepository.findAllYears();
-        log("Recalculating classification for " + years.size() + " years");
+        log("Recalculating derived stats for " + years.size() + " years");
         for (Integer year : years) {
             derivedStatsRepository.deleteByYear(year);
-            calculateAndSaveClassificationForYear(year);
+            calculateAndSaveForYear(year);
         }
     }
 
     // ============================================================
-    // PUBLIC API — TRENDS (computed on the fly, never stored)
+    // REGIONAL DOMINANCE DETECTION
+    // A city is "regionally dominant" if it's the largest city
+    // within REGIONAL_DOMINANCE_RADIUS_MILES and has at least
+    // REGIONAL_DOMINANCE_MIN_POPULATION people.
     // ============================================================
 
-    /**
-     * Compute trends for all cities comparing currentYear vs baseYear.
-     * Returns a list of CityTrend DTOs with growth % for every metric.
-     * Nothing is persisted — pure computation.
-     */
-    public List<CityTrend> computeTrends(Integer currentYear, Integer baseYear) {
-        log("Computing trends: " + baseYear + " → " + currentYear);
+    private Set<String> computeRegionallyDominantCities(List<City> cities) {
+        Set<String> dominant = new HashSet<>();
 
-        List<City> currentCities = cityRepository.findByYearOrderByPopulationDesc(currentYear);
-        List<City> baseCities = cityRepository.findByYearOrderByPopulationDesc(baseYear);
-
-        if (currentCities.isEmpty() || baseCities.isEmpty()) {
-            log("Missing data — current: " + currentCities.size() + ", base: " + baseCities.size());
-            return Collections.emptyList();
-        }
-
-        // Build base year lookup by geoid
-        Map<String, City> baseMap = new HashMap<>();
-        for (City c : baseCities) {
-            if (c.getGeoid() != null) {
-                baseMap.put(c.getGeoid(), c);
+        // Filter to cities with valid coordinates and minimum population
+        List<City> candidates = new ArrayList<>();
+        for (City c : cities) {
+            if (c.getGeoid() != null && c.getLatitude() != null && c.getLongitude() != null
+                && c.getPopulation() != null && c.getPopulation() >= REGIONAL_DOMINANCE_MIN_POPULATION) {
+                candidates.add(c);
             }
         }
 
-        // Also need classification data for urbanization index trends
-        // Get stored classification for both years (compute if missing)
-        Map<String, DerivedStats> currentClassMap = buildClassificationMap(currentYear);
-        Map<String, DerivedStats> baseClassMap = buildClassificationMap(baseYear);
+        // For each candidate, check if any OTHER city within the radius is larger
+        for (City candidate : candidates) {
+            boolean isLargest = true;
 
-        List<CityTrend> trends = new ArrayList<>();
-        for (City current : currentCities) {
-            if (current.getGeoid() == null) continue;
-            City base = baseMap.get(current.getGeoid());
-            if (base == null) continue; // City didn't exist in base year
+            for (City other : candidates) {
+                if (other.getGeoid().equals(candidate.getGeoid())) continue;
 
-            CityTrend trend = new CityTrend(
-                current.getGeoid(), current.getName(), currentYear, baseYear
-            );
-
-            // Overview
-            trend.setPopulationGrowthPct(pctGrowthInt(base.getPopulation(), current.getPopulation()));
-            trend.setMedianAgeGrowthPct(pctGrowthDouble(base.getMedianAge(), current.getMedianAge()));
-
-            // Income
-            trend.setMedianIncomeGrowthPct(pctGrowthInt(base.getMedianHouseholdIncome(), current.getMedianHouseholdIncome()));
-            trend.setPerCapitaIncomeGrowthPct(pctGrowthInt(base.getPerCapitaIncome(), current.getPerCapitaIncome()));
-
-            // Housing
-            trend.setMedianHomeValueGrowthPct(pctGrowthInt(base.getMedianHomeValue(), current.getMedianHomeValue()));
-            trend.setMedianRentGrowthPct(pctGrowthInt(base.getMedianRent(), current.getMedianRent()));
-            trend.setHomeownershipRateGrowthPct(rateGrowthPct(
-                base.getOwnerOccupied(), sumInts(base.getOwnerOccupied(), base.getRenterOccupied()),
-                current.getOwnerOccupied(), sumInts(current.getOwnerOccupied(), current.getRenterOccupied())
-            ));
-
-            // Employment
-            trend.setUnemploymentRateGrowthPct(rateGrowthPct(
-                base.getUnemployed(), base.getLaborForce(),
-                current.getUnemployed(), current.getLaborForce()
-            ));
-            trend.setLaborForceParticipationGrowthPct(rateGrowthPct(
-                base.getLaborForce(), sumInts(base.getLaborForce(), base.getNotInLaborForce()),
-                current.getLaborForce(), sumInts(current.getLaborForce(), current.getNotInLaborForce())
-            ));
-            trend.setWorkFromHomePctGrowthPct(rateGrowthPct(
-                base.getWorkFromHome(), base.getEmployed(),
-                current.getWorkFromHome(), current.getEmployed()
-            ));
-
-            // Sex
-            trend.setMalePctGrowthPct(rateGrowthPct(
-                base.getMalePopulation(), base.getPopulation(),
-                current.getMalePopulation(), current.getPopulation()
-            ));
-            trend.setFemalePctGrowthPct(rateGrowthPct(
-                base.getFemalePopulation(), base.getPopulation(),
-                current.getFemalePopulation(), current.getPopulation()
-            ));
-
-            // Race
-            trend.setWhitePctGrowthPct(rateGrowthPct(
-                base.getWhitePopulation(), base.getPopulation(),
-                current.getWhitePopulation(), current.getPopulation()
-            ));
-            trend.setBlackPctGrowthPct(rateGrowthPct(
-                base.getBlackPopulation(), base.getPopulation(),
-                current.getBlackPopulation(), current.getPopulation()
-            ));
-            trend.setAsianPctGrowthPct(rateGrowthPct(
-                base.getAsianPopulation(), base.getPopulation(),
-                current.getAsianPopulation(), current.getPopulation()
-            ));
-            trend.setNativeAmericanPctGrowthPct(rateGrowthPct(
-                base.getNativeAmericanPopulation(), base.getPopulation(),
-                current.getNativeAmericanPopulation(), current.getPopulation()
-            ));
-            trend.setPacificIslanderPctGrowthPct(rateGrowthPct(
-                base.getPacificIslanderPopulation(), base.getPopulation(),
-                current.getPacificIslanderPopulation(), current.getPopulation()
-            ));
-            trend.setTwoOrMoreRacesPctGrowthPct(rateGrowthPct(
-                base.getTwoOrMoreRacesPopulation(), base.getPopulation(),
-                current.getTwoOrMoreRacesPopulation(), current.getPopulation()
-            ));
-            trend.setOtherRacePctGrowthPct(rateGrowthPct(
-                base.getOtherRacePopulation(), base.getPopulation(),
-                current.getOtherRacePopulation(), current.getPopulation()
-            ));
-
-            // Ethnicity
-            trend.setHispanicPctGrowthPct(rateGrowthPct(
-                base.getHispanicPopulation(), base.getPopulation(),
-                current.getHispanicPopulation(), current.getPopulation()
-            ));
-
-            // Classification — urbanization index growth
-            DerivedStats currentClass = currentClassMap.get(current.getGeoid());
-            DerivedStats baseClass = baseClassMap.get(current.getGeoid());
-            if (currentClass != null && baseClass != null) {
-                trend.setUrbanizationIndexGrowthPct(
-                    pctGrowthDouble(baseClass.getUrbanizationIndex(), currentClass.getUrbanizationIndex())
+                double dist = haversineDistance(
+                    candidate.getLatitude(), candidate.getLongitude(),
+                    other.getLatitude(), other.getLongitude()
                 );
+
+                if (dist <= REGIONAL_DOMINANCE_RADIUS_MILES && other.getPopulation() > candidate.getPopulation()) {
+                    isLargest = false;
+                    break;
+                }
             }
 
-            trends.add(trend);
+            if (isLargest) {
+                dominant.add(candidate.getGeoid());
+                log("  Regional hub: " + candidate.getName() + " (pop " + candidate.getPopulation() + ")");
+            }
         }
 
-        log("Computed " + trends.size() + " trend records");
-        return trends;
+        return dominant;
     }
 
     // ============================================================
     // CLASSIFICATION LOGIC
-    // Ported from frontend map.component.ts getUrbanizationIndex()
+    // Computes urbanization index from weighted sub-scores, then
+    // applies overrides:
+    //   1. Population floor: 250k+ → Urban
+    //   2. Regional dominance: largest city within 60mi, 75k+ → Urban
     // ============================================================
 
-    private void computeClassification(DerivedStats ds, City city) {
+    private void computeClassification(DerivedStats ds, City city, boolean isRegionallyDominant) {
         if (city.getPopulation() == null || city.getPopulation() == 0) {
             ds.setClassification("Rural");
             ds.setUrbanizationIndex(0.0);
@@ -311,75 +265,140 @@ public class DerivedStatsService {
         // Weighted: population 50%, density 20%, income ratio 15%, proximity 15%
         double index = popScore * 0.50 + densityScore * 0.20 + incomeScore * 0.15 + proxScore * 0.15;
 
-        // Store everything
-        ds.setUrbanizationIndex(round2(index));
+        // Store sub-scores
         ds.setPopulationScore(round2(popScore));
         ds.setDensityScore(round2(densityScore));
         ds.setProximityScore(round2(proxScore));
         ds.setIncomeRatioScore(round2(incomeScore));
 
-        // Classification label
-        if (index >= URBAN_THRESHOLD) {
-            ds.setClassification("Urban");
+        // ============================================================
+        // CLASSIFICATION OVERRIDES
+        // The raw index stays as-is (it's the honest composite score),
+        // but the classification label gets promoted when overrides apply.
+        // ============================================================
+
+        String classification;
+
+        // Override 1: Population floor — 250k+ is always Urban
+        if (population >= URBAN_POPULATION_FLOOR) {
+            classification = "Urban";
+            // Bump index to at least the threshold so it's visually consistent
+            index = Math.max(index, URBAN_THRESHOLD);
+
+        // Override 2: Regional dominance — largest city in the area, 75k+
+        } else if (isRegionallyDominant) {
+            classification = "Urban";
+            // Bump index to at least the threshold
+            index = Math.max(index, URBAN_THRESHOLD);
+
+        // Default: use thresholds on the raw index
+        } else if (index >= URBAN_THRESHOLD) {
+            classification = "Urban";
         } else if (index >= SUBURBAN_THRESHOLD) {
-            ds.setClassification("Suburban");
+            classification = "Suburban";
         } else {
-            ds.setClassification("Rural");
+            classification = "Rural";
         }
+
+        ds.setUrbanizationIndex(round2(index));
+        ds.setClassification(classification);
     }
 
     // ============================================================
-    // HELPERS
+    // TREND CALCULATIONS
     // ============================================================
 
-    /**
-     * Build a geoid → DerivedStats map for a year, computing if not yet stored.
-     */
-    private Map<String, DerivedStats> buildClassificationMap(Integer year) {
-        List<DerivedStats> list = getClassificationForYear(year);
-        Map<String, DerivedStats> map = new HashMap<>();
-        for (DerivedStats ds : list) {
-            map.put(ds.getGeoid(), ds);
-        }
-        return map;
+    private void computeTrends(DerivedStats ds, City current, City base, Integer baseYear) {
+        ds.setTrendBaseYear(baseYear);
+
+        // Percentage growth for absolute values
+        ds.setPopulationGrowthPct(pctGrowth(base.getPopulation(), current.getPopulation()));
+        ds.setMedianIncomeGrowthPct(pctGrowth(base.getMedianHouseholdIncome(), current.getMedianHouseholdIncome()));
+        ds.setPerCapitaIncomeGrowthPct(pctGrowth(base.getPerCapitaIncome(), current.getPerCapitaIncome()));
+        ds.setMedianHomeValueGrowthPct(pctGrowth(base.getMedianHomeValue(), current.getMedianHomeValue()));
+        ds.setMedianRentGrowthPct(pctGrowth(base.getMedianRent(), current.getMedianRent()));
+
+        // Percentage point changes for rates
+        ds.setUnemploymentRateChange(rateDelta(
+            base.getUnemployed(), base.getLaborForce(),
+            current.getUnemployed(), current.getLaborForce()
+        ));
+
+        ds.setPovertyRateChange(rateDelta(
+            base.getPovertyTotal(), base.getPopulation(),
+            current.getPovertyTotal(), current.getPopulation()
+        ));
+
+        ds.setHomeownershipRateChange(homeownershipDelta(base, current));
+
+        ds.setBachelorsPlusChange(bachelorsPlusDelta(base, current));
+
+        ds.setHispanicPctChange(rateDelta(
+            base.getHispanicPopulation(), base.getPopulation(),
+            current.getHispanicPopulation(), current.getPopulation()
+        ));
+
+        ds.setForeignBornPctChange(rateDelta(
+            base.getForeignBorn(), base.getPopulation(),
+            current.getForeignBorn(), current.getPopulation()
+        ));
+
+        ds.setWorkFromHomePctChange(rateDelta(
+            base.getWorkFromHome(), base.getEmployed(),
+            current.getWorkFromHome(), current.getEmployed()
+        ));
     }
 
-    /**
-     * Percentage growth for Integer values: ((new - old) / |old|) * 100.
-     * Returns null if data missing or old is 0.
-     */
-    private Double pctGrowthInt(Integer oldVal, Integer newVal) {
+    // ============================================================
+    // MATH HELPERS
+    // ============================================================
+
+    /** Percentage growth: ((new - old) / |old|) * 100. Returns null if data missing. */
+    private Double pctGrowth(Integer oldVal, Integer newVal) {
         if (oldVal == null || newVal == null || oldVal == 0) return null;
         return round2(((double) (newVal - oldVal) / Math.abs(oldVal)) * 100.0);
     }
 
-    /**
-     * Percentage growth for Double values: ((new - old) / |old|) * 100.
-     * Returns null if data missing or old is 0.
-     */
-    private Double pctGrowthDouble(Double oldVal, Double newVal) {
-        if (oldVal == null || newVal == null || oldVal == 0.0) return null;
-        return round2(((newVal - oldVal) / Math.abs(oldVal)) * 100.0);
-    }
-
-    /**
-     * Rate growth in percentage: computes rate for both years, then % change of the rate.
-     * e.g. unemployment 8% → 5% = ((5-8)/|8|)*100 = -37.5%
-     * Returns null if data missing.
-     */
-    private Double rateGrowthPct(Integer oldNum, Integer oldDenom, Integer newNum, Integer newDenom) {
+    /** Rate delta in percentage points: newRate - oldRate. Returns null if data missing. */
+    private Double rateDelta(Integer oldNum, Integer oldDenom, Integer newNum, Integer newDenom) {
         if (oldNum == null || oldDenom == null || newNum == null || newDenom == null) return null;
         if (oldDenom == 0 || newDenom == 0) return null;
         double oldRate = (double) oldNum / oldDenom * 100.0;
         double newRate = (double) newNum / newDenom * 100.0;
-        if (oldRate == 0.0) return null;
-        return round2(((newRate - oldRate) / Math.abs(oldRate)) * 100.0);
+        return round2(newRate - oldRate);
     }
 
-    /** Safe sum of two nullable Integers. Returns null if both null. */
-    private Integer sumInts(Integer a, Integer b) {
-        if (a == null && b == null) return null;
-        return (a != null ? a : 0) + (b != null ? b : 0);
+    /** Homeownership rate delta (owner / (owner + renter)). */
+    private Double homeownershipDelta(City base, City current) {
+        Integer baseOwner = base.getOwnerOccupied();
+        Integer baseRenter = base.getRenterOccupied();
+        Integer curOwner = current.getOwnerOccupied();
+        Integer curRenter = current.getRenterOccupied();
+
+        if (baseOwner == null || baseRenter == null || curOwner == null || curRenter == null) return null;
+        int baseDenom = baseOwner + baseRenter;
+        int curDenom = curOwner + curRenter;
+        if (baseDenom == 0 || curDenom == 0) return null;
+
+        double baseRate = (double) baseOwner / baseDenom * 100.0;
+        double curRate = (double) curOwner / curDenom * 100.0;
+        return round2(curRate - baseRate);
+    }
+
+    /** Bachelor's+ rate delta (bachelors + masters + doctorate) / population. */
+    private Double bachelorsPlusDelta(City base, City current) {
+        Integer basePop = base.getPopulation();
+        Integer curPop = current.getPopulation();
+        if (basePop == null || curPop == null || basePop == 0 || curPop == 0) return null;
+
+        int baseEdu = safeInt(base.getEduBachelors()) + safeInt(base.getEduMasters()) + safeInt(base.getEduDoctorate());
+        int curEdu = safeInt(current.getEduBachelors()) + safeInt(current.getEduMasters()) + safeInt(current.getEduDoctorate());
+
+        if (baseEdu == 0 && curEdu == 0) return null;
+
+        double baseRate = (double) baseEdu / basePop * 100.0;
+        double curRate = (double) curEdu / curPop * 100.0;
+        return round2(curRate - baseRate);
     }
 
     /** Haversine distance in miles between two lat/lng points. */
@@ -400,6 +419,11 @@ public class DerivedStatsService {
     /** Round to 2 decimal places. */
     private double round2(double value) {
         return Math.round(value * 100.0) / 100.0;
+    }
+
+    /** Safe int extraction — null becomes 0. */
+    private int safeInt(Integer value) {
+        return value != null ? value : 0;
     }
 
     private void log(String message) {

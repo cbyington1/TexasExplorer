@@ -3,7 +3,7 @@ import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import * as L from 'leaflet';
 import { forkJoin } from 'rxjs';
-import { CityService } from '../city.service';
+import { CityService, DerivedStats } from '../city.service';
 import { City } from '../city.model';
 
 // Filter metric definition
@@ -69,10 +69,13 @@ export class MapComponent implements OnInit, AfterViewInit {
   
   texasStats: any = null;
 
-  // City classification
+  // City classification — now from backend
   cityClassification: string = '';
   classificationFilters: Set<string> = new Set(); // empty = show all
   classificationExpanded: boolean = false;
+
+  // Backend derived stats lookup (geoid -> DerivedStats)
+  private derivedStatsMap: Map<string, DerivedStats> = new Map();
 
   // Data quality filter
   requireCompleteData: boolean = true;
@@ -86,6 +89,9 @@ export class MapComponent implements OnInit, AfterViewInit {
   historyData: City[] = [];
   historyLoading: boolean = false;
   
+  // Derived stats history for urbanization chart
+  private derivedHistoryData: DerivedStats[] = [];
+
   historyMetrics: { key: string; label: string; category: string; getValue: (city: City) => number | null; format: (v: number) => string; yFormat: (v: number) => string }[] = [
     // Overview - standalone numbers
     { key: 'population', label: 'Population', category: 'Overview', getValue: (c) => c.population, format: (v) => v?.toLocaleString() || 'N/A', yFormat: (v) => v >= 1000 ? (v/1000).toFixed(0) + 'k' : v?.toString() },
@@ -121,7 +127,7 @@ export class MapComponent implements OnInit, AfterViewInit {
     // Ethnicity - composition % (separate from race)
     { key: 'hispanicPct', label: 'Hispanic/Latino %', category: 'Ethnicity', getValue: (c) => (c.hispanicPopulation && c.population > 0) ? (c.hispanicPopulation / c.population) * 100 : null, format: (v) => v?.toFixed(1) + '%', yFormat: (v) => v?.toFixed(0) + '%' },
 
-    // Classification - continuous urbanization index
+    // Classification - urbanization index from backend
     { key: 'urbanIndex', label: 'Urbanization Index', category: 'Classification', getValue: (c) => this.getUrbanizationIndex(c), format: (v) => v?.toFixed(1) + ' / 100', yFormat: (v) => v?.toFixed(0) },
   ];
 
@@ -627,7 +633,6 @@ export class MapComponent implements OnInit, AfterViewInit {
   }
 
   onYearChange(): void {
-    this.urbanIndexCache.clear();
     this.loadCitiesForYear();
     this.loadTexasStats(this.selectedYear);
   }
@@ -646,9 +651,20 @@ export class MapComponent implements OnInit, AfterViewInit {
 
   private loadCitiesForYear(): void {
     this.loading = true;
-    this.cityService.getCitiesForYear(this.selectedYear).subscribe({
-      next: (cities) => {
+
+    // Load cities and derived stats in parallel
+    forkJoin({
+      cities: this.cityService.getCitiesForYear(this.selectedYear),
+      derived: this.cityService.getDerivedStats(this.selectedYear)
+    }).subscribe({
+      next: ({ cities, derived }) => {
         this.allCities = cities;
+
+        // Build geoid -> DerivedStats lookup
+        this.derivedStatsMap.clear();
+        derived.forEach(d => this.derivedStatsMap.set(d.geoid, d));
+        console.log('Loaded derived stats for', this.selectedYear, ':', derived.length, 'cities');
+
         this.loading = false;
         this.applyFilters();
       },
@@ -675,7 +691,7 @@ export class MapComponent implements OnInit, AfterViewInit {
 
   // Get the value for a metric from a city (handles percentages)
   getMetricValue(city: City, metric: FilterMetric): number {
-    // Special case: computed urbanization index
+    // Special case: computed urbanization index from backend
     if (metric.key === 'urbanIndex') {
       return this.getUrbanizationIndex(city) ?? 0;
     }
@@ -723,12 +739,10 @@ export class MapComponent implements OnInit, AfterViewInit {
     return this.classificationFilters.has(label);
   }
 
+  // Get classification label from backend derived stats
   private getCityClassificationLabel(city: City): string {
-    const index = this.getUrbanizationIndex(city);
-    if (index === null) return 'Rural';
-    if (index >= 73) return 'Urban';
-    if (index >= 37) return 'Suburban';
-    return 'Rural';
+    const ds = this.derivedStatsMap.get(city.geoid);
+    return ds?.classification || 'Rural';
   }
 
   // Toggle list panel
@@ -1592,82 +1606,17 @@ export class MapComponent implements OnInit, AfterViewInit {
     return '0.9rem';
   }
 
-  // Continuous Urbanization Index (0-100) for history charting
-  private urbanIndexCache: Map<string, number | null> = new Map();
+  // ============================================================
+  // URBANIZATION INDEX — now from backend derived stats
+  // ============================================================
 
   getUrbanizationIndex(city: City): number | null {
-    if (!city.population) return null;
-
-    // Cache key: geoid + year (population changes per year)
-    const cacheKey = (city.geoid || '') + '-' + (city.year || 0);
-    if (this.urbanIndexCache.has(cacheKey)) {
-      return this.urbanIndexCache.get(cacheKey)!;
-    }
-
-    // Density component (0-100): log scale
-    // 100→0, 1000→30, 3000→60, 10000+→100
-    const density = (city.landAreaSqMi && city.landAreaSqMi > 0) ? city.population / city.landAreaSqMi : 0;
-    const densityScore = density > 0
-      ? Math.min(100, Math.max(0, (Math.log10(density) - 2.0) / (4.0 - 2.0) * 100))
-      : 0;
-
-    // Population component (0-100): log scale, steeper separation
-    // 1000→0, 50k→35, 200k→60, 500k→75, 2M+→100
-    const popScore = city.population > 0
-      ? Math.min(100, Math.max(0, (Math.log10(city.population) - 3.0) / (6.3 - 3.0) * 100))
-      : 0;
-
-    // Metro proximity component (0-100): smaller influence
-    let proxScore = 0;
-    if (city.latitude && city.longitude) {
-      let minDist = Infinity;
-      for (const m of this.texasMetros) {
-        const d = this.haversineDistance(city.latitude, city.longitude, m.lat, m.lng);
-        if (d < minDist) minDist = d;
-      }
-      proxScore = Math.max(0, Math.min(100, (1 - minDist / 80) * 100));
-    }
-
-    // Income ratio component: per capita / household income
-    // Higher ratio = more urban economic character (single earners, diverse workforce)
-    // Suburbs with dual-income families: ~0.35-0.42, Urban centers: ~0.45-0.65
-    let incomeScore = 50; // neutral default
-    if (city.medianHouseholdIncome && city.medianHouseholdIncome > 0 &&
-        city.perCapitaIncome && city.perCapitaIncome > 0) {
-      const ratio = city.perCapitaIncome / city.medianHouseholdIncome;
-      incomeScore = Math.min(100, Math.max(0, (ratio - 0.25) / (0.70 - 0.25) * 100));
-    }
-
-    // Weighted: population 50%, density 20%, income ratio 15%, proximity 15%
-    const result = popScore * 0.50 + densityScore * 0.20 + incomeScore * 0.15 + proxScore * 0.15;
-    this.urbanIndexCache.set(cacheKey, result);
-    return result;
+    if (!city.geoid) return null;
+    const ds = this.derivedStatsMap.get(city.geoid);
+    return ds?.urbanizationIndex ?? null;
   }
 
-  private haversineDistance(lat1: number, lng1: number, lat2: number, lng2: number): number {
-    const dLat = (lat2 - lat1) * Math.PI / 180;
-    const dLng = (lng2 - lng1) * Math.PI / 180;
-    const a = Math.sin(dLat / 2) ** 2 + Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLng / 2) ** 2;
-    return 3959 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-  }
-
-  // City Classification
-  private readonly texasMetros = [
-    { lat: 29.7604, lng: -95.3698 },  // Houston
-    { lat: 32.7767, lng: -96.7970 },  // Dallas
-    { lat: 29.4241, lng: -98.4936 },  // San Antonio
-    { lat: 30.2672, lng: -97.7431 },  // Austin
-    { lat: 32.7555, lng: -97.3308 },  // Fort Worth
-    { lat: 31.7619, lng: -106.4850 }, // El Paso
-    { lat: 27.8006, lng: -97.3964 },  // Corpus Christi
-    { lat: 33.5779, lng: -101.8552 }, // Lubbock
-    { lat: 35.2220, lng: -101.8313 }, // Amarillo
-    { lat: 26.2034, lng: -98.2300 },  // McAllen
-    { lat: 25.9017, lng: -97.4975 },  // Brownsville
-    { lat: 27.5036, lng: -99.5076 },  // Laredo
-    { lat: 31.9973, lng: -102.0779 }, // Midland
-  ];
-
+  // City Classification — from backend
   private updateCityClassification(): void {
     if (!this.selectedCity) {
       this.cityClassification = '';
@@ -1681,12 +1630,17 @@ export class MapComponent implements OnInit, AfterViewInit {
     this.showHistoryPanel = true;
     this.historyLoading = true;
     this.historyData = [];
+    this.derivedHistoryData = [];
     
     if (this.selectedCity) {
-      // City-level history - single API call
-      this.cityService.getCityHistory(this.selectedCity.geoid).subscribe({
-        next: (data) => {
-          this.historyData = data.sort((a, b) => a.year - b.year);
+      // City-level history - fetch city data + derived history in parallel
+      forkJoin({
+        cityHistory: this.cityService.getCityHistory(this.selectedCity.geoid),
+        derivedHistory: this.cityService.getDerivedHistory(this.selectedCity.geoid)
+      }).subscribe({
+        next: ({ cityHistory, derivedHistory }) => {
+          this.historyData = cityHistory.sort((a, b) => a.year - b.year);
+          this.derivedHistoryData = derivedHistory.sort((a, b) => a.year - b.year);
           this.historyLoading = false;
           setTimeout(() => this.createAllHistoryCharts(), 50);
         },
@@ -1795,7 +1749,17 @@ export class MapComponent implements OnInit, AfterViewInit {
       const ctx = canvas.getContext('2d');
       if (!ctx) return;
 
-      const data = this.historyData.map(d => metric.getValue(d));
+      // For urbanization index, use derived history data from backend
+      let data: (number | null)[];
+      let chartYears: number[];
+      if (metric.key === 'urbanIndex' && this.derivedHistoryData.length > 0) {
+        chartYears = this.derivedHistoryData.map(d => d.year);
+        data = this.derivedHistoryData.map(d => d.urbanizationIndex);
+      } else {
+        chartYears = years;
+        data = this.historyData.map(d => metric.getValue(d));
+      }
+
       const color = this.getMetricColor(metric.key);
 
       // Special config for urbanization index chart
@@ -1843,7 +1807,7 @@ export class MapComponent implements OnInit, AfterViewInit {
       const chartConfig: any = {
         type: 'line',
         data: {
-          labels: years,
+          labels: chartYears,
           datasets: [{
             label: metric.label,
             data: data,
@@ -1910,6 +1874,18 @@ export class MapComponent implements OnInit, AfterViewInit {
   }
 
   getMetricChange(metric: any): { value: string; positive: boolean } | null {
+    // For urbanization index, use derived history data
+    if (metric.key === 'urbanIndex' && this.derivedHistoryData.length >= 2) {
+      const first = this.derivedHistoryData[0].urbanizationIndex;
+      const last = this.derivedHistoryData[this.derivedHistoryData.length - 1].urbanizationIndex;
+      if (!first || !last) return null;
+      const change = ((last - first) / Math.abs(first)) * 100;
+      return {
+        value: (change >= 0 ? '+' : '') + change.toFixed(1) + '%',
+        positive: change >= 0
+      };
+    }
+
     if (this.historyData.length < 2) return null;
     
     const first = metric.getValue(this.historyData[0]);

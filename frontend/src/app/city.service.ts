@@ -3,6 +3,18 @@ import { HttpClient } from '@angular/common/http';
 import { Observable } from 'rxjs';
 import { City } from './city.model';
 
+export interface DerivedStats {
+  id: number;
+  geoid: string;
+  year: number;
+  urbanizationIndex: number;
+  classification: string;
+  populationScore: number;
+  densityScore: number;
+  proximityScore: number;
+  incomeRatioScore: number;
+}
+
 @Injectable({
   providedIn: 'root'
 })
@@ -60,5 +72,15 @@ export class CityService {
   // Get Texas-wide statistics for a year
   getTexasStats(year: number): Observable<any> {
     return this.http.get<any>(`https://texasexplorer-production.up.railway.app/api/texas-stats/${year}`);
+  }
+
+  // Get derived stats (classification, urbanization index) for a year
+  getDerivedStats(year: number): Observable<DerivedStats[]> {
+    return this.http.get<DerivedStats[]>(`https://texasexplorer-production.up.railway.app/api/derived/${year}`);
+  }
+
+  // Get derived stats history for a single city
+  getDerivedHistory(geoid: string): Observable<DerivedStats[]> {
+    return this.http.get<DerivedStats[]>(`https://texasexplorer-production.up.railway.app/api/derived/history/${geoid}`);
   }
 }
