@@ -123,6 +123,7 @@ public class DerivedStatsService {
     @Transactional
     public List<DerivedStats> recalculateForYear(Integer year) {
         derivedStatsRepository.deleteByYear(year);
+        derivedStatsRepository.flush();
         return calculateAndSaveForYear(year);
     }
 
@@ -135,6 +136,7 @@ public class DerivedStatsService {
         log("Recalculating derived stats for " + years.size() + " years");
         for (Integer year : years) {
             derivedStatsRepository.deleteByYear(year);
+            derivedStatsRepository.flush();
             calculateAndSaveForYear(year);
         }
     }
