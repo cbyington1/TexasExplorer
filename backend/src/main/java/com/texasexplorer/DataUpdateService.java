@@ -151,7 +151,7 @@ public class DataUpdateService {
             // Calculate and save derived classification for this year
             log("  Calculating classification for " + year + "...");
             try {
-                derivedStatsService.calculateAndSaveClassificationForYear(year);
+                derivedStatsService.calculateAndSaveForYear(year);
                 log("  Classification saved for " + year);
             } catch (Exception e) {
                 logError("  Failed to calculate classification for " + year + ": " + e.getMessage());
