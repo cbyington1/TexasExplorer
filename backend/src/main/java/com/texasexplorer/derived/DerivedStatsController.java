@@ -25,8 +25,8 @@ public class DerivedStatsController {
      * Frontend merges with city data by geoid.
      */
     @GetMapping("/{year}")
-    public ResponseEntity<List<DerivedStats>> getClassificationForYear(@PathVariable Integer year) {
-        List<DerivedStats> stats = derivedStatsService.getClassificationForYear(year);
+    public ResponseEntity<List<DerivedStats>> getStatsForYear(@PathVariable Integer year) {
+        List<DerivedStats> stats = derivedStatsService.getStatsForYear(year);
         if (stats.isEmpty()) {
             return ResponseEntity.notFound().build();
         }
@@ -39,8 +39,8 @@ public class DerivedStatsController {
      * For history panel charts showing urbanization index over time.
      */
     @GetMapping("/history/{geoid}")
-    public ResponseEntity<List<DerivedStats>> getCityClassificationHistory(@PathVariable String geoid) {
-        List<DerivedStats> history = derivedStatsService.getCityClassificationHistory(geoid);
+    public ResponseEntity<List<DerivedStats>> getCityHistory(@PathVariable String geoid) {
+        List<DerivedStats> history = derivedStatsService.getCityHistory(geoid);
         if (history.isEmpty()) {
             return ResponseEntity.notFound().build();
         }
@@ -53,7 +53,7 @@ public class DerivedStatsController {
      */
     @PostMapping("/recalculate/{year}")
     public ResponseEntity<List<DerivedStats>> recalculateYear(@PathVariable Integer year) {
-        List<DerivedStats> stats = derivedStatsService.recalculateClassificationForYear(year);
+        List<DerivedStats> stats = derivedStatsService.recalculateForYear(year);
         if (stats.isEmpty()) {
             return ResponseEntity.notFound().build();
         }
@@ -66,7 +66,7 @@ public class DerivedStatsController {
      */
     @PostMapping("/recalculate-all")
     public ResponseEntity<String> recalculateAll() {
-        derivedStatsService.recalculateAllClassifications();
+        derivedStatsService.recalculateAll();
         return ResponseEntity.ok("Recalculation complete for all years");
     }
 
@@ -78,7 +78,6 @@ public class DerivedStatsController {
      * GET /api/derived/trends?current=2024&base=2012
      * Compute growth % for every metric comparing two years.
      * Returns a CityTrend DTO per city — lightweight, not persisted.
-     * Frontend uses this for trend filtering, sorting, coloring.
      */
     @GetMapping("/trends")
     public ResponseEntity<List<CityTrend>> getTrends(

@@ -91,23 +91,6 @@ public class DerivedStatsService {
             return Collections.emptyList();
         }
 
-        // Load base year data for trend calculations
-        // Find the earliest year available in the database
-        List<Integer> allYears = cityRepository.findAllYears();
-        Integer baseYear = allYears.isEmpty() ? null : allYears.get(0);
-
-        // Build a lookup map of base year cities by geoid (only if base year != current year)
-        Map<String, City> baseYearMap = new HashMap<>();
-        if (baseYear != null && !baseYear.equals(year)) {
-            List<City> baseCities = cityRepository.findByYearOrderByPopulationDesc(baseYear);
-            for (City c : baseCities) {
-                if (c.getGeoid() != null) {
-                    baseYearMap.put(c.getGeoid(), c);
-                }
-            }
-            log("Loaded " + baseYearMap.size() + " base year (" + baseYear + ") cities for trend comparison");
-        }
-
         // Pre-compute regional dominance: for each city, determine if it's the
         // largest city within REGIONAL_DOMINANCE_RADIUS_MILES
         Set<String> regionallyDominant = computeRegionallyDominantCities(cities);
@@ -123,14 +106,6 @@ public class DerivedStatsService {
             // Classification (now with population floor + regional dominance)
             boolean isDominant = regionallyDominant.contains(city.getGeoid());
             computeClassification(ds, city, isDominant);
-
-            // Trends (skip if this IS the base year — no delta to compute)
-            if (baseYear != null && !baseYear.equals(year)) {
-                City baseCity = baseYearMap.get(city.getGeoid());
-                if (baseCity != null) {
-                    computeTrends(ds, city, baseCity, baseYear);
-                }
-            }
 
             results.add(ds);
         }
@@ -305,100 +280,158 @@ public class DerivedStatsService {
     }
 
     // ============================================================
-    // TREND CALCULATIONS
+    // ON-THE-FLY TREND CALCULATIONS
+    // Compares two years of city data, returns CityTrend DTOs.
+    // Nothing is persisted — this is computed fresh each request.
     // ============================================================
 
-    private void computeTrends(DerivedStats ds, City current, City base, Integer baseYear) {
-        ds.setTrendBaseYear(baseYear);
+    /**
+     * Compute trend percentages for all cities between two years.
+     * Returns a list of CityTrend DTOs with growth % for every metric.
+     */
+    public List<CityTrend> computeTrends(Integer currentYear, Integer baseYear) {
+        log("Computing trends: " + baseYear + " → " + currentYear);
 
-        // Percentage growth for absolute values
-        ds.setPopulationGrowthPct(pctGrowth(base.getPopulation(), current.getPopulation()));
-        ds.setMedianIncomeGrowthPct(pctGrowth(base.getMedianHouseholdIncome(), current.getMedianHouseholdIncome()));
-        ds.setPerCapitaIncomeGrowthPct(pctGrowth(base.getPerCapitaIncome(), current.getPerCapitaIncome()));
-        ds.setMedianHomeValueGrowthPct(pctGrowth(base.getMedianHomeValue(), current.getMedianHomeValue()));
-        ds.setMedianRentGrowthPct(pctGrowth(base.getMedianRent(), current.getMedianRent()));
+        List<City> currentCities = cityRepository.findByYearOrderByPopulationDesc(currentYear);
+        List<City> baseCities = cityRepository.findByYearOrderByPopulationDesc(baseYear);
 
-        // Percentage point changes for rates
-        ds.setUnemploymentRateChange(rateDelta(
-            base.getUnemployed(), base.getLaborForce(),
-            current.getUnemployed(), current.getLaborForce()
-        ));
+        if (currentCities.isEmpty() || baseCities.isEmpty()) {
+            log("Missing data for trend calculation");
+            return Collections.emptyList();
+        }
 
-        ds.setPovertyRateChange(rateDelta(
-            base.getPovertyTotal(), base.getPopulation(),
-            current.getPovertyTotal(), current.getPopulation()
-        ));
+        // Build base year lookup by geoid
+        Map<String, City> baseMap = new HashMap<>();
+        for (City c : baseCities) {
+            if (c.getGeoid() != null) {
+                baseMap.put(c.getGeoid(), c);
+            }
+        }
 
-        ds.setHomeownershipRateChange(homeownershipDelta(base, current));
+        // Also grab derived stats for both years (for urbanization index trend)
+        Map<String, DerivedStats> currentDerived = new HashMap<>();
+        Map<String, DerivedStats> baseDerived = new HashMap<>();
+        for (DerivedStats ds : getStatsForYear(currentYear)) {
+            currentDerived.put(ds.getGeoid(), ds);
+        }
+        for (DerivedStats ds : getStatsForYear(baseYear)) {
+            baseDerived.put(ds.getGeoid(), ds);
+        }
 
-        ds.setBachelorsPlusChange(bachelorsPlusDelta(base, current));
+        List<CityTrend> trends = new ArrayList<>();
+        for (City cur : currentCities) {
+            if (cur.getGeoid() == null) continue;
+            City base = baseMap.get(cur.getGeoid());
+            if (base == null) continue;
 
-        ds.setHispanicPctChange(rateDelta(
-            base.getHispanicPopulation(), base.getPopulation(),
-            current.getHispanicPopulation(), current.getPopulation()
-        ));
+            CityTrend t = new CityTrend(cur.getGeoid(), cur.getName(), currentYear, baseYear);
 
-        ds.setForeignBornPctChange(rateDelta(
-            base.getForeignBorn(), base.getPopulation(),
-            current.getForeignBorn(), current.getPopulation()
-        ));
+            // Overview
+            t.setPopulationGrowthPct(pctGrowthInt(base.getPopulation(), cur.getPopulation()));
+            t.setMedianAgeGrowthPct(pctGrowthDbl(base.getMedianAge(), cur.getMedianAge()));
 
-        ds.setWorkFromHomePctChange(rateDelta(
-            base.getWorkFromHome(), base.getEmployed(),
-            current.getWorkFromHome(), current.getEmployed()
-        ));
+            // Income
+            t.setMedianIncomeGrowthPct(pctGrowthInt(base.getMedianHouseholdIncome(), cur.getMedianHouseholdIncome()));
+            t.setPerCapitaIncomeGrowthPct(pctGrowthInt(base.getPerCapitaIncome(), cur.getPerCapitaIncome()));
+
+            // Housing
+            t.setMedianHomeValueGrowthPct(pctGrowthInt(base.getMedianHomeValue(), cur.getMedianHomeValue()));
+            t.setMedianRentGrowthPct(pctGrowthInt(base.getMedianRent(), cur.getMedianRent()));
+            t.setHomeownershipRateGrowthPct(ratePctChange(
+                base.getOwnerOccupied(), base.getRenterOccupied(),
+                cur.getOwnerOccupied(), cur.getRenterOccupied()));
+
+            // Employment
+            t.setUnemploymentRateGrowthPct(ratePctChange(
+                base.getUnemployed(), base.getLaborForce(),
+                cur.getUnemployed(), cur.getLaborForce()));
+            t.setLaborForceParticipationGrowthPct(ratePctChange(
+                base.getLaborForce(), base.getPopulation(),
+                cur.getLaborForce(), cur.getPopulation()));
+            t.setWorkFromHomePctGrowthPct(ratePctChange(
+                base.getWorkFromHome(), base.getEmployed(),
+                cur.getWorkFromHome(), cur.getEmployed()));
+
+            // Sex
+            t.setMalePctGrowthPct(ratePctChange(
+                base.getMalePopulation(), base.getPopulation(),
+                cur.getMalePopulation(), cur.getPopulation()));
+            t.setFemalePctGrowthPct(ratePctChange(
+                base.getFemalePopulation(), base.getPopulation(),
+                cur.getFemalePopulation(), cur.getPopulation()));
+
+            // Race
+            t.setWhitePctGrowthPct(ratePctChange(
+                base.getWhitePopulation(), base.getPopulation(),
+                cur.getWhitePopulation(), cur.getPopulation()));
+            t.setBlackPctGrowthPct(ratePctChange(
+                base.getBlackPopulation(), base.getPopulation(),
+                cur.getBlackPopulation(), cur.getPopulation()));
+            t.setAsianPctGrowthPct(ratePctChange(
+                base.getAsianPopulation(), base.getPopulation(),
+                cur.getAsianPopulation(), cur.getPopulation()));
+            t.setNativeAmericanPctGrowthPct(ratePctChange(
+                base.getNativeAmericanPopulation(), base.getPopulation(),
+                cur.getNativeAmericanPopulation(), cur.getPopulation()));
+            t.setPacificIslanderPctGrowthPct(ratePctChange(
+                base.getPacificIslanderPopulation(), base.getPopulation(),
+                cur.getPacificIslanderPopulation(), cur.getPopulation()));
+            t.setTwoOrMoreRacesPctGrowthPct(ratePctChange(
+                base.getTwoOrMoreRacesPopulation(), base.getPopulation(),
+                cur.getTwoOrMoreRacesPopulation(), cur.getPopulation()));
+            t.setOtherRacePctGrowthPct(ratePctChange(
+                base.getOtherRacePopulation(), base.getPopulation(),
+                cur.getOtherRacePopulation(), cur.getPopulation()));
+
+            // Ethnicity
+            t.setHispanicPctGrowthPct(ratePctChange(
+                base.getHispanicPopulation(), base.getPopulation(),
+                cur.getHispanicPopulation(), cur.getPopulation()));
+
+            // Classification — urbanization index change
+            DerivedStats curDs = currentDerived.get(cur.getGeoid());
+            DerivedStats baseDs = baseDerived.get(cur.getGeoid());
+            if (curDs != null && baseDs != null
+                && curDs.getUrbanizationIndex() != null && baseDs.getUrbanizationIndex() != null) {
+                t.setUrbanizationIndexGrowthPct(pctGrowthDbl(
+                    baseDs.getUrbanizationIndex(), curDs.getUrbanizationIndex()));
+            }
+
+            trends.add(t);
+        }
+
+        log("Computed " + trends.size() + " city trends");
+        return trends;
     }
 
     // ============================================================
     // MATH HELPERS
     // ============================================================
 
-    /** Percentage growth: ((new - old) / |old|) * 100. Returns null if data missing. */
-    private Double pctGrowth(Integer oldVal, Integer newVal) {
+    /** Percentage growth for Integer values: ((new - old) / |old|) * 100 */
+    private Double pctGrowthInt(Integer oldVal, Integer newVal) {
         if (oldVal == null || newVal == null || oldVal == 0) return null;
         return round2(((double) (newVal - oldVal) / Math.abs(oldVal)) * 100.0);
     }
 
-    /** Rate delta in percentage points: newRate - oldRate. Returns null if data missing. */
-    private Double rateDelta(Integer oldNum, Integer oldDenom, Integer newNum, Integer newDenom) {
+    /** Percentage growth for Double values: ((new - old) / |old|) * 100 */
+    private Double pctGrowthDbl(Double oldVal, Double newVal) {
+        if (oldVal == null || newVal == null || oldVal == 0.0) return null;
+        return round2(((newVal - oldVal) / Math.abs(oldVal)) * 100.0);
+    }
+
+    /**
+     * Rate percentage point change.
+     * Computes (numerator/denominator) for both years, returns the difference.
+     * For homeownership: pass (owner, owner+renter) as num/denom.
+     * For unemployment: pass (unemployed, laborForce).
+     */
+    private Double ratePctChange(Integer oldNum, Integer oldDenom, Integer newNum, Integer newDenom) {
         if (oldNum == null || oldDenom == null || newNum == null || newDenom == null) return null;
         if (oldDenom == 0 || newDenom == 0) return null;
         double oldRate = (double) oldNum / oldDenom * 100.0;
         double newRate = (double) newNum / newDenom * 100.0;
         return round2(newRate - oldRate);
-    }
-
-    /** Homeownership rate delta (owner / (owner + renter)). */
-    private Double homeownershipDelta(City base, City current) {
-        Integer baseOwner = base.getOwnerOccupied();
-        Integer baseRenter = base.getRenterOccupied();
-        Integer curOwner = current.getOwnerOccupied();
-        Integer curRenter = current.getRenterOccupied();
-
-        if (baseOwner == null || baseRenter == null || curOwner == null || curRenter == null) return null;
-        int baseDenom = baseOwner + baseRenter;
-        int curDenom = curOwner + curRenter;
-        if (baseDenom == 0 || curDenom == 0) return null;
-
-        double baseRate = (double) baseOwner / baseDenom * 100.0;
-        double curRate = (double) curOwner / curDenom * 100.0;
-        return round2(curRate - baseRate);
-    }
-
-    /** Bachelor's+ rate delta (bachelors + masters + doctorate) / population. */
-    private Double bachelorsPlusDelta(City base, City current) {
-        Integer basePop = base.getPopulation();
-        Integer curPop = current.getPopulation();
-        if (basePop == null || curPop == null || basePop == 0 || curPop == 0) return null;
-
-        int baseEdu = safeInt(base.getEduBachelors()) + safeInt(base.getEduMasters()) + safeInt(base.getEduDoctorate());
-        int curEdu = safeInt(current.getEduBachelors()) + safeInt(current.getEduMasters()) + safeInt(current.getEduDoctorate());
-
-        if (baseEdu == 0 && curEdu == 0) return null;
-
-        double baseRate = (double) baseEdu / basePop * 100.0;
-        double curRate = (double) curEdu / curPop * 100.0;
-        return round2(curRate - baseRate);
     }
 
     /** Haversine distance in miles between two lat/lng points. */
@@ -419,11 +452,6 @@ public class DerivedStatsService {
     /** Round to 2 decimal places. */
     private double round2(double value) {
         return Math.round(value * 100.0) / 100.0;
-    }
-
-    /** Safe int extraction — null becomes 0. */
-    private int safeInt(Integer value) {
-        return value != null ? value : 0;
     }
 
     private void log(String message) {
