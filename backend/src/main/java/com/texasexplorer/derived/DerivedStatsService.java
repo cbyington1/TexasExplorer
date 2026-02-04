@@ -120,28 +120,23 @@ public class DerivedStatsService {
         return results;
     }
 
-    /**
-     * Recalculate for a year (delete existing first).
-     */
-    @Transactional
+    
+     @Transactional
     public List<DerivedStats> recalculateForYear(Integer year) {
-        derivedStatsRepository.deleteByYear(year);
+        derivedStatsRepository.deleteAllByYear(year);
         return calculateAndSaveForYear(year);
     }
 
-    /**
-     * Recalculate all years.
-     */
     @Transactional
     public void recalculateAll() {
         List<Integer> years = cityRepository.findAllYears();
         log("Recalculating derived stats for " + years.size() + " years");
         for (Integer year : years) {
-            derivedStatsRepository.deleteByYear(year);
+            derivedStatsRepository.deleteAllByYear(year);
             calculateAndSaveForYear(year);
         }
     }
-
+    
     // ============================================================
     // REGIONAL DOMINANCE DETECTION
     // A city is "regionally dominant" if it's the largest city
