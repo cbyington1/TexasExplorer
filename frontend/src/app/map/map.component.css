@@ -1792,10 +1792,10 @@
   background: rgba(0, 0, 0, 0.5);
   z-index: 1999;
   opacity: 0;
-  animation: fadeIn 0.3s ease forwards;
+  animation: historyFadeIn 0.3s ease forwards;
 }
 
-@keyframes fadeIn {
+@keyframes historyFadeIn {
   to { opacity: 1; }
 }
 
@@ -2082,4 +2082,228 @@
   .chart-container {
     height: 180px;
   }
+}
+
+/* ================================
+   FILTER SUBSECTIONS (Basics / Trends)
+   ================================ */
+.filter-subsection {
+  margin-top: 16px;
+  border: 1px solid #e0e0e0;
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.subsection-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 14px;
+  background: #f0f2f5;
+  cursor: default;
+}
+
+.subsection-label {
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: #2c3e50;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.filter-subsection .filter-accordion {
+  gap: 4px;
+}
+
+/* Mobile subsection */
+.mobile-filter-subsection {
+  margin-top: 12px;
+  border: 1px solid #e0e0e0;
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.mobile-subsection-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 14px;
+  background: #f0f2f5;
+}
+
+.mobile-subsection-label {
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: #2c3e50;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.mobile-filter-subsection .mobile-filter-categories {
+  gap: 4px;
+}
+
+/* Master toggle switch */
+.trend-master-toggle {
+  position: relative;
+  display: inline-block;
+  width: 40px;
+  height: 22px;
+  cursor: pointer;
+}
+
+.trend-master-toggle input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.trend-toggle-slider {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: #ccc;
+  border-radius: 22px;
+  transition: background 0.25s;
+}
+
+.trend-toggle-slider::before {
+  content: '';
+  position: absolute;
+  width: 16px;
+  height: 16px;
+  left: 3px;
+  bottom: 3px;
+  background: white;
+  border-radius: 50%;
+  transition: transform 0.25s;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+}
+
+.trend-master-toggle input:checked + .trend-toggle-slider {
+  background: #3498db;
+}
+
+.trend-master-toggle input:checked + .trend-toggle-slider::before {
+  transform: translateX(18px);
+}
+
+/* Subsection collapse/expand body */
+.subsection-body {
+  max-height: 0;
+  overflow: hidden;
+  opacity: 0;
+  transition: max-height 0.35s ease, opacity 0.25s ease, padding 0.35s ease;
+  padding: 0 12px;
+}
+
+.subsection-body.expanded {
+  max-height: 3000px;
+  overflow: visible;
+  opacity: 1;
+  padding: 12px;
+}
+
+/* Base Year Selector */
+.trend-base-year {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 16px;
+  padding: 10px 12px;
+  background: #f8f9fa;
+  border-radius: 8px;
+  border: 1px solid #e9ecef;
+}
+
+.trend-base-label {
+  font-size: 0.8rem;
+  color: #6c757d;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.trend-year-select {
+  flex: 0 0 auto;
+  width: auto !important;
+  min-width: 80px;
+  padding: 6px 10px !important;
+  font-size: 0.85rem !important;
+}
+
+/* Loading indicator */
+.trend-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 24px 0;
+  color: #6c757d;
+  font-size: 0.85rem;
+}
+
+.loading-spinner.small {
+  width: 20px;
+  height: 20px;
+  border-width: 2px;
+}
+
+/* Unit badge (% or pp) */
+.trend-unit-badge {
+  display: inline-block;
+  font-size: 0.65rem;
+  font-weight: 700;
+  color: #6c757d;
+  background: #e9ecef;
+  padding: 1px 5px;
+  border-radius: 3px;
+  margin-left: 4px;
+  vertical-align: middle;
+  letter-spacing: 0.3px;
+}
+
+/* Trend category visual distinction — blue-tinted */
+.trend-category {
+  border-color: #d4e6f1;
+}
+
+.trend-category .category-header,
+.trend-category .mobile-category-header {
+  background: #f0f7fc;
+}
+
+.trend-category .category-header:hover,
+.trend-category .mobile-category-header:hover {
+  background: #e4f0f9;
+}
+
+.trend-category .category-header.has-active,
+.trend-category .mobile-category-header.has-active {
+  background: #d6eaf8;
+  border-left-color: #2980b9;
+}
+
+/* Trend slider tick markers */
+.trend-zero-tick {
+  position: absolute;
+  top: -4px;
+  bottom: -4px;
+  width: 2px;
+  background: #2c3e50;
+  border-radius: 1px;
+  z-index: 2;
+  pointer-events: none;
+}
+
+.trend-limit-tick {
+  position: absolute;
+  top: -5px;
+  bottom: -5px;
+  width: 2px;
+  background: #e74c3c;
+  border-radius: 1px;
+  z-index: 2;
+  pointer-events: none;
 }

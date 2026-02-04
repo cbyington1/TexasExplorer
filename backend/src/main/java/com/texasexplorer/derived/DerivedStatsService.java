@@ -107,6 +107,9 @@ public class DerivedStatsService {
             boolean isDominant = regionallyDominant.contains(city.getGeoid());
             computeClassification(ds, city, isDominant);
 
+            // Diversity index (Simpson's, normalized 0-100)
+            computeDiversityIndex(ds, city);
+
             results.add(ds);
         }
 
@@ -123,7 +126,6 @@ public class DerivedStatsService {
     @Transactional
     public List<DerivedStats> recalculateForYear(Integer year) {
         derivedStatsRepository.deleteByYear(year);
-        derivedStatsRepository.flush();
         return calculateAndSaveForYear(year);
     }
 
@@ -136,7 +138,6 @@ public class DerivedStatsService {
         log("Recalculating derived stats for " + years.size() + " years");
         for (Integer year : years) {
             derivedStatsRepository.deleteByYear(year);
-            derivedStatsRepository.flush();
             calculateAndSaveForYear(year);
         }
     }
@@ -282,6 +283,53 @@ public class DerivedStatsService {
     }
 
     // ============================================================
+    // DIVERSITY INDEX
+    // Simpson's Diversity Index: 1 - Σ(p_i²)
+    // where p_i is each racial group's proportion of total population.
+    // Normalized to 0-100 scale.
+    // 0 = completely homogeneous, ~85 = maximally diverse
+    // We scale by dividing by theoretical max to get 0-100.
+    // ============================================================
+
+    private void computeDiversityIndex(DerivedStats ds, City city) {
+        if (city.getPopulation() == null || city.getPopulation() == 0) {
+            ds.setDiversityIndex(0.0);
+            return;
+        }
+
+        double pop = city.getPopulation();
+
+        // Get each racial group's proportion
+        double[] proportions = {
+            safeInt(city.getWhitePopulation()) / pop,
+            safeInt(city.getBlackPopulation()) / pop,
+            safeInt(city.getAsianPopulation()) / pop,
+            safeInt(city.getNativeAmericanPopulation()) / pop,
+            safeInt(city.getPacificIslanderPopulation()) / pop,
+            safeInt(city.getTwoOrMoreRacesPopulation()) / pop,
+            safeInt(city.getOtherRacePopulation()) / pop,
+            safeInt(city.getHispanicPopulation()) / pop,
+        };
+
+        // Simpson's: 1 - Σ(p_i²)
+        double sumSquares = 0.0;
+        for (double p : proportions) {
+            sumSquares += p * p;
+        }
+        double simpson = 1.0 - sumSquares;
+
+        // Theoretical max for 8 groups = 1 - 8*(1/8)² = 0.875
+        // Normalize to 0-100
+        double normalized = (simpson / 0.875) * 100.0;
+        ds.setDiversityIndex(round2(clamp(normalized)));
+    }
+
+    /** Safe integer extraction — null becomes 0. */
+    private double safeInt(Integer val) {
+        return val != null ? val.doubleValue() : 0.0;
+    }
+
+    // ============================================================
     // ON-THE-FLY TREND CALCULATIONS
     // Compares two years of city data, returns CityTrend DTOs.
     // Nothing is persisted — this is computed fresh each request.
@@ -397,6 +445,13 @@ public class DerivedStatsService {
                 && curDs.getUrbanizationIndex() != null && baseDs.getUrbanizationIndex() != null) {
                 t.setUrbanizationIndexGrowthPct(pctGrowthDbl(
                     baseDs.getUrbanizationIndex(), curDs.getUrbanizationIndex()));
+            }
+
+            // Diversity — diversity index change
+            if (curDs != null && baseDs != null
+                && curDs.getDiversityIndex() != null && baseDs.getDiversityIndex() != null) {
+                t.setDiversityIndexGrowthPct(pctGrowthDbl(
+                    baseDs.getDiversityIndex(), curDs.getDiversityIndex()));
             }
 
             trends.add(t);

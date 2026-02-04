@@ -3,7 +3,7 @@ import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import * as L from 'leaflet';
 import { forkJoin } from 'rxjs';
-import { CityService, DerivedStats } from '../city.service';
+import { CityService, DerivedStats, CityTrend } from '../city.service';
 import { City } from '../city.model';
 
 // Filter metric definition
@@ -33,6 +33,25 @@ interface ActiveFilter {
   metricKey: string;
   min: number;
   max: number;
+}
+
+// Trend filter metric definition
+interface TrendMetric {
+  key: string;           // e.g. 'trend_populationGrowthPct'
+  label: string;         // e.g. 'Population'
+  trendField: string;    // field on CityTrend, e.g. 'populationGrowthPct'
+  unit: string;          // '%', 'pp' (percentage points)
+  min: number;
+  max: number;
+  step: number;
+}
+
+// Trend filter category
+interface TrendCategory {
+  key: string;
+  label: string;
+  expanded: boolean;
+  metrics: TrendMetric[];
 }
 
 // Color configuration
@@ -77,6 +96,17 @@ export class MapComponent implements OnInit, AfterViewInit {
   // Backend derived stats lookup (geoid -> DerivedStats)
   private derivedStatsMap: Map<string, DerivedStats> = new Map();
 
+  // Trend data
+  trendData: Map<string, CityTrend> = new Map(); // geoid -> CityTrend
+  trendBaseYear: number = 2012;
+  trendLoading: boolean = false;
+  trendEnabled: boolean = false; // master toggle for trend section
+  basicsEnabled: boolean = false; // master toggle for basics filter section
+  trendCategories: TrendCategory[] = [];
+  trendFilterValues: Map<string, { min: number; max: number }> = new Map();
+  activeTrendFilters: Map<string, ActiveFilter> = new Map();
+  private trendDebounceTimer: any = null;
+
   // Data quality filter
   requireCompleteData: boolean = true;
 
@@ -106,26 +136,21 @@ export class MapComponent implements OnInit, AfterViewInit {
     { key: 'medianRent', label: 'Median Rent', category: 'Housing', getValue: (c) => c.medianRent, format: (v) => v ? '$' + v.toLocaleString() : 'N/A', yFormat: (v) => '$' + v?.toFixed(0) },
     { key: 'ownershipRate', label: 'Homeownership Rate', category: 'Housing', getValue: (c) => (c.ownerOccupied && (c.ownerOccupied + c.renterOccupied) > 0) ? (c.ownerOccupied / (c.ownerOccupied + c.renterOccupied)) * 100 : null, format: (v) => v?.toFixed(1) + '%', yFormat: (v) => v?.toFixed(0) + '%' },
     
-    // Employment - composition %
-    { key: 'unemploymentRate', label: 'Unemployment Rate', category: 'Employment', getValue: (c) => (c.laborForce && c.laborForce > 0) ? (c.unemployed / c.laborForce) * 100 : null, format: (v) => v?.toFixed(1) + '%', yFormat: (v) => v?.toFixed(1) + '%' },
-    { key: 'laborForcePct', label: 'Labor Force Participation', category: 'Employment', getValue: (c) => (c.population && c.population > 0) ? (c.laborForce / c.population) * 100 : null, format: (v) => v?.toFixed(1) + '%', yFormat: (v) => v?.toFixed(0) + '%' },
-    { key: 'workFromHomePct', label: 'Work From Home %', category: 'Employment', getValue: (c) => (c.employed && c.employed > 0) ? (c.workFromHome / c.employed) * 100 : null, format: (v) => v?.toFixed(1) + '%', yFormat: (v) => v?.toFixed(1) + '%' },
-    
     // Sex - composition %
-    { key: 'malePct', label: 'Male %', category: 'Sex', getValue: (c) => (c.malePopulation && c.population > 0) ? (c.malePopulation / c.population) * 100 : null, format: (v) => v?.toFixed(1) + '%', yFormat: (v) => v?.toFixed(1) + '%' },
-    { key: 'femalePct', label: 'Female %', category: 'Sex', getValue: (c) => (c.femalePopulation && c.population > 0) ? (c.femalePopulation / c.population) * 100 : null, format: (v) => v?.toFixed(1) + '%', yFormat: (v) => v?.toFixed(1) + '%' },
+    { key: 'malePct', label: 'Male', category: 'Sex', getValue: (c) => (c.malePopulation && c.population > 0) ? (c.malePopulation / c.population) * 100 : null, format: (v) => v?.toFixed(1) + '%', yFormat: (v) => v?.toFixed(1) + '%' },
+    { key: 'femalePct', label: 'Female', category: 'Sex', getValue: (c) => (c.femalePopulation && c.population > 0) ? (c.femalePopulation / c.population) * 100 : null, format: (v) => v?.toFixed(1) + '%', yFormat: (v) => v?.toFixed(1) + '%' },
     
     // Race - composition %
-    { key: 'whitePct', label: 'White %', category: 'Race', getValue: (c) => (c.whitePopulation && c.population > 0) ? (c.whitePopulation / c.population) * 100 : null, format: (v) => v?.toFixed(1) + '%', yFormat: (v) => v?.toFixed(0) + '%' },
-    { key: 'blackPct', label: 'Black %', category: 'Race', getValue: (c) => (c.blackPopulation && c.population > 0) ? (c.blackPopulation / c.population) * 100 : null, format: (v) => v?.toFixed(1) + '%', yFormat: (v) => v?.toFixed(0) + '%' },
-    { key: 'asianPct', label: 'Asian %', category: 'Race', getValue: (c) => (c.asianPopulation && c.population > 0) ? (c.asianPopulation / c.population) * 100 : null, format: (v) => v?.toFixed(1) + '%', yFormat: (v) => v?.toFixed(0) + '%' },
-    { key: 'nativeAmericanPct', label: 'Native American %', category: 'Race', getValue: (c) => (c.nativeAmericanPopulation && c.population > 0) ? (c.nativeAmericanPopulation / c.population) * 100 : null, format: (v) => v?.toFixed(1) + '%', yFormat: (v) => v?.toFixed(1) + '%' },
-    { key: 'pacificIslanderPct', label: 'Pacific Islander %', category: 'Race', getValue: (c) => (c.pacificIslanderPopulation && c.population > 0) ? (c.pacificIslanderPopulation / c.population) * 100 : null, format: (v) => v?.toFixed(1) + '%', yFormat: (v) => v?.toFixed(1) + '%' },
-    { key: 'twoOrMorePct', label: 'Two or More Races %', category: 'Race', getValue: (c) => (c.twoOrMoreRacesPopulation && c.population > 0) ? (c.twoOrMoreRacesPopulation / c.population) * 100 : null, format: (v) => v?.toFixed(1) + '%', yFormat: (v) => v?.toFixed(1) + '%' },
-    { key: 'otherRacePct', label: 'Other Race %', category: 'Race', getValue: (c) => (c.otherRacePopulation && c.population > 0) ? (c.otherRacePopulation / c.population) * 100 : null, format: (v) => v?.toFixed(1) + '%', yFormat: (v) => v?.toFixed(1) + '%' },
+    { key: 'whitePct', label: 'White', category: 'Race', getValue: (c) => (c.whitePopulation && c.population > 0) ? (c.whitePopulation / c.population) * 100 : null, format: (v) => v?.toFixed(1) + '%', yFormat: (v) => v?.toFixed(0) + '%' },
+    { key: 'blackPct', label: 'Black', category: 'Race', getValue: (c) => (c.blackPopulation && c.population > 0) ? (c.blackPopulation / c.population) * 100 : null, format: (v) => v?.toFixed(1) + '%', yFormat: (v) => v?.toFixed(0) + '%' },
+    { key: 'asianPct', label: 'Asian', category: 'Race', getValue: (c) => (c.asianPopulation && c.population > 0) ? (c.asianPopulation / c.population) * 100 : null, format: (v) => v?.toFixed(1) + '%', yFormat: (v) => v?.toFixed(0) + '%' },
+    { key: 'nativeAmericanPct', label: 'Native American', category: 'Race', getValue: (c) => (c.nativeAmericanPopulation && c.population > 0) ? (c.nativeAmericanPopulation / c.population) * 100 : null, format: (v) => v?.toFixed(1) + '%', yFormat: (v) => v?.toFixed(1) + '%' },
+    { key: 'pacificIslanderPct', label: 'Pacific Islander', category: 'Race', getValue: (c) => (c.pacificIslanderPopulation && c.population > 0) ? (c.pacificIslanderPopulation / c.population) * 100 : null, format: (v) => v?.toFixed(1) + '%', yFormat: (v) => v?.toFixed(1) + '%' },
+    { key: 'twoOrMorePct', label: 'Two or More Races', category: 'Race', getValue: (c) => (c.twoOrMoreRacesPopulation && c.population > 0) ? (c.twoOrMoreRacesPopulation / c.population) * 100 : null, format: (v) => v?.toFixed(1) + '%', yFormat: (v) => v?.toFixed(1) + '%' },
+    { key: 'otherRacePct', label: 'Other Race', category: 'Race', getValue: (c) => (c.otherRacePopulation && c.population > 0) ? (c.otherRacePopulation / c.population) * 100 : null, format: (v) => v?.toFixed(1) + '%', yFormat: (v) => v?.toFixed(1) + '%' },
     
     // Ethnicity - composition % (separate from race)
-    { key: 'hispanicPct', label: 'Hispanic/Latino %', category: 'Ethnicity', getValue: (c) => (c.hispanicPopulation && c.population > 0) ? (c.hispanicPopulation / c.population) * 100 : null, format: (v) => v?.toFixed(1) + '%', yFormat: (v) => v?.toFixed(0) + '%' },
+    { key: 'hispanicPct', label: 'Hispanic/Latino', category: 'Ethnicity', getValue: (c) => (c.hispanicPopulation && c.population > 0) ? (c.hispanicPopulation / c.population) * 100 : null, format: (v) => v?.toFixed(1) + '%', yFormat: (v) => v?.toFixed(0) + '%' },
 
     // Classification - urbanization index from backend
     { key: 'urbanIndex', label: 'Urbanization Index', category: 'Classification', getValue: (c) => this.getUrbanizationIndex(c), format: (v) => v?.toFixed(1) + ' / 100', yFormat: (v) => v?.toFixed(0) },
@@ -444,6 +469,89 @@ export class MapComponent implements OnInit, AfterViewInit {
     this.draggingThumb = null;
     this.sliderRect = null;
   }
+
+  // ============ Trend Range Slider Handling ============
+  private draggingTrendMetric: TrendMetric | null = null;
+  private draggingTrendThumb: 'min' | 'max' | null = null;
+  private trendSliderRect: DOMRect | null = null;
+
+  onTrendRangeMouseDown(event: MouseEvent, metric: TrendMetric): void {
+    const container = event.currentTarget as HTMLElement;
+    this.startTrendDrag(event.clientX, container, metric);
+
+    const onMouseMove = (e: MouseEvent) => this.onTrendDragMove(e.clientX);
+    const onMouseUp = () => {
+      document.removeEventListener('mousemove', onMouseMove);
+      document.removeEventListener('mouseup', onMouseUp);
+      this.endTrendDrag();
+    };
+
+    document.addEventListener('mousemove', onMouseMove);
+    document.addEventListener('mouseup', onMouseUp);
+  }
+
+  onTrendRangeTouchStart(event: TouchEvent, metric: TrendMetric): void {
+    const container = event.currentTarget as HTMLElement;
+    const touch = event.touches[0];
+    this.startTrendDrag(touch.clientX, container, metric);
+
+    const onTouchMove = (e: TouchEvent) => {
+      e.preventDefault();
+      this.onTrendDragMove(e.touches[0].clientX);
+    };
+    const onTouchEnd = () => {
+      document.removeEventListener('touchmove', onTouchMove);
+      document.removeEventListener('touchend', onTouchEnd);
+      this.endTrendDrag();
+    };
+
+    document.addEventListener('touchmove', onTouchMove, { passive: false });
+    document.addEventListener('touchend', onTouchEnd);
+  }
+
+  private startTrendDrag(clientX: number, container: HTMLElement, metric: TrendMetric): void {
+    this.trendSliderRect = container.getBoundingClientRect();
+    this.draggingTrendMetric = metric;
+
+    const percent = (clientX - this.trendSliderRect.left) / this.trendSliderRect.width;
+    const clickValue = metric.min + percent * (metric.max - metric.min);
+
+    const minVal = this.getTrendFilterMin(metric);
+    const maxVal = this.getTrendFilterMax(metric);
+
+    this.draggingTrendThumb = Math.abs(clickValue - minVal) <= Math.abs(clickValue - maxVal) ? 'min' : 'max';
+    this.onTrendDragMove(clientX);
+  }
+
+  private onTrendDragMove(clientX: number): void {
+    if (!this.trendSliderRect || !this.draggingTrendMetric || !this.draggingTrendThumb) return;
+
+    const metric = this.draggingTrendMetric;
+    let percent = (clientX - this.trendSliderRect.left) / this.trendSliderRect.width;
+    percent = Math.max(0, Math.min(1, percent));
+
+    let value = metric.min + percent * (metric.max - metric.min);
+    value = Math.round(value / metric.step) * metric.step;
+    value = Math.max(metric.min, Math.min(metric.max, value));
+
+    const current = this.trendFilterValues.get(metric.key) || { min: metric.min, max: metric.max };
+
+    if (this.draggingTrendThumb === 'min') {
+      current.min = Math.min(value, current.max - metric.step);
+    } else {
+      current.max = Math.max(value, current.min + metric.step);
+    }
+
+    this.trendFilterValues.set(metric.key, current);
+    this.onTrendFilterChange(metric);
+    this.cdr.detectChanges();
+  }
+
+  private endTrendDrag(): void {
+    this.draggingTrendMetric = null;
+    this.draggingTrendThumb = null;
+    this.trendSliderRect = null;
+  }
   // ======================================================
 
   ngOnInit(): void {
@@ -460,84 +568,36 @@ export class MapComponent implements OnInit, AfterViewInit {
   private initFilterCategories(): void {
     this.filterCategories = [
       {
-        key: 'population',
-        label: 'Population & Age',
+        key: 'growth',
+        label: 'Growth',
         icon: '',
         expanded: false,
         metrics: [
           { key: 'population', label: 'Population', type: 'raw', field: 'population', min: 100, max: 500000, step: 1000 },
           { key: 'medianAge', label: 'Median Age', type: 'years', field: 'medianAge', min: 18, max: 70, step: 1 },
-          { key: 'ageUnder18Pct', label: 'Under 18', type: 'percent', field: 'ageUnder18', percentOf: 'population', min: 0, max: 100, step: 1 },
-          { key: 'age65plusPct', label: 'Age 65+', type: 'percent', field: 'age65plus', percentOf: 'population', min: 0, max: 100, step: 1 },
+          { key: 'medianHouseholdIncome', label: 'Median Household Income', type: 'currency', field: 'medianHouseholdIncome', min: 25000, max: 125000, step: 5000 },
+          { key: 'perCapitaIncome', label: 'Per Capita Income', type: 'currency', field: 'perCapitaIncome', min: 15000, max: 75000, step: 2500 },
         ]
       },
       {
-        key: 'sex',
-        label: 'Sex',
+        key: 'demographics',
+        label: 'Demographics',
         icon: '',
         expanded: false,
         metrics: [
           { key: 'malePct', label: 'Male / Female Balance', type: 'balance', field: 'malePopulation', percentOf: 'population', min: 0, max: 100, step: 1 },
-          { key: 'malePercent', label: 'Male %', type: 'percent', field: 'malePopulation', percentOf: 'population', min: 0, max: 100, step: 1, dropdownOnly: true },
-          { key: 'femalePercent', label: 'Female %', type: 'percent', field: 'femalePopulation', percentOf: 'population', min: 0, max: 100, step: 1, dropdownOnly: true },
-        ]
-      },
-      {
-        key: 'race',
-        label: 'Race',
-        icon: '',
-        expanded: false,
-        metrics: [
+          { key: 'malePercent', label: 'Male', type: 'percent', field: 'malePopulation', percentOf: 'population', min: 0, max: 100, step: 1, dropdownOnly: true },
+          { key: 'femalePercent', label: 'Female', type: 'percent', field: 'femalePopulation', percentOf: 'population', min: 0, max: 100, step: 1, dropdownOnly: true },
+          { key: 'ageUnder18Pct', label: 'Under 18', type: 'percent', field: 'ageUnder18', percentOf: 'population', min: 0, max: 100, step: 1 },
+          { key: 'age65plusPct', label: 'Age 65+', type: 'percent', field: 'age65plus', percentOf: 'population', min: 0, max: 100, step: 1 },
           { key: 'whitePct', label: 'White', type: 'percent', field: 'whitePopulation', percentOf: 'population', min: 0, max: 100, step: 1 },
           { key: 'blackPct', label: 'Black', type: 'percent', field: 'blackPopulation', percentOf: 'population', min: 0, max: 100, step: 1 },
           { key: 'asianPct', label: 'Asian', type: 'percent', field: 'asianPopulation', percentOf: 'population', min: 0, max: 100, step: 1 },
+          { key: 'hispanicPct', label: 'Hispanic/Latino', type: 'percent', field: 'hispanicPopulation', percentOf: 'population', min: 0, max: 100, step: 1 },
           { key: 'nativeAmericanPct', label: 'Native American', type: 'percent', field: 'nativeAmericanPopulation', percentOf: 'population', min: 0, max: 100, step: 1 },
           { key: 'pacificIslanderPct', label: 'Pacific Islander', type: 'percent', field: 'pacificIslanderPopulation', percentOf: 'population', min: 0, max: 100, step: 1 },
           { key: 'twoOrMorePct', label: 'Two or More Races', type: 'percent', field: 'twoOrMoreRacesPopulation', percentOf: 'population', min: 0, max: 100, step: 1 },
           { key: 'otherRacePct', label: 'Other Race', type: 'percent', field: 'otherRacePopulation', percentOf: 'population', min: 0, max: 100, step: 1 },
-        ]
-      },
-      {
-        key: 'ethnicity',
-        label: 'Ethnicity',
-        icon: '',
-        expanded: false,
-        metrics: [
-          { key: 'hispanicPct', label: 'Hispanic/Latino', type: 'percent', field: 'hispanicPopulation', percentOf: 'population', min: 0, max: 100, step: 1 },
-        ]
-      },
-      {
-        key: 'economic',
-        label: 'Economic',
-        icon: '',
-        expanded: false,
-        metrics: [
-          { key: 'medianHouseholdIncome', label: 'Median Household Income', type: 'currency', field: 'medianHouseholdIncome', min: 25000, max: 125000, step: 5000 },
-          { key: 'perCapitaIncome', label: 'Per Capita Income', type: 'currency', field: 'perCapitaIncome', min: 15000, max: 75000, step: 2500 },
-          { key: 'povertyPct', label: 'Poverty Rate', type: 'percent', field: 'povertyTotal', percentOf: 'population', min: 0, max: 100, step: 1 },
-        ]
-      },
-      {
-        key: 'employment',
-        label: 'Employment',
-        icon: '',
-        expanded: false,
-        metrics: [
-          { key: 'unemploymentPct', label: 'Unemployment Rate', type: 'percent', field: 'unemployed', percentOf: 'laborForce', min: 0, max: 100, step: 1 },
-          { key: 'laborForcePct', label: 'Labor Force Participation', type: 'percent', field: 'laborForce', percentOf: 'population', min: 0, max: 100, step: 1 },
-          { key: 'workFromHomePct', label: 'Work From Home', type: 'percent', field: 'workFromHome', percentOf: 'employed', min: 0, max: 100, step: 1 },
-        ]
-      },
-      {
-        key: 'education',
-        label: 'Education',
-        icon: '',
-        expanded: false,
-        metrics: [
-          { key: 'noHighSchoolPct', label: 'No High School', type: 'percent', field: 'eduNoHighSchool', percentOf: 'population', min: 0, max: 100, step: 1 },
-          { key: 'highSchoolOnlyPct', label: 'High School Only', type: 'percent', field: 'eduHighSchoolOnly', percentOf: 'population', min: 0, max: 100, step: 1 },
-          { key: 'bachelorsPct', label: "Bachelor's Degree+", type: 'percent', field: 'eduBachelors', percentOf: 'population', min: 0, max: 100, step: 1 },
-          { key: 'mastersPct', label: "Master's Degree+", type: 'percent', field: 'eduMasters', percentOf: 'population', min: 0, max: 100, step: 1 },
         ]
       },
       {
@@ -557,6 +617,58 @@ export class MapComponent implements OnInit, AfterViewInit {
     this.filterCategories.forEach(cat => {
       cat.metrics.forEach(metric => {
         this.filterValues.set(metric.key, { min: metric.min, max: metric.max });
+      });
+    });
+
+    // Trend filter categories — only the metrics worth trending
+    this.trendCategories = [
+      {
+        key: 'trend_growth',
+        label: 'Growth',
+        expanded: false,
+        metrics: [
+          { key: 'trend_population', label: 'Population', trendField: 'populationGrowthPct', unit: '%', min: -500, max: 500, step: 25 },
+          { key: 'trend_medianIncome', label: 'Median Income', trendField: 'medianIncomeGrowthPct', unit: '%', min: -500, max: 500, step: 25 },
+          { key: 'trend_perCapitaIncome', label: 'Per Capita Income', trendField: 'perCapitaIncomeGrowthPct', unit: '%', min: -500, max: 500, step: 25 },
+        ]
+      },
+      {
+        key: 'trend_demographics',
+        label: 'Demographics',
+        expanded: false,
+        metrics: [
+          { key: 'trend_male', label: 'Male', trendField: 'malePctGrowthPct', unit: '%', min: -100, max: 100, step: 5 },
+          { key: 'trend_female', label: 'Female', trendField: 'femalePctGrowthPct', unit: '%', min: -100, max: 100, step: 5 },
+          { key: 'trend_hispanic', label: 'Hispanic', trendField: 'hispanicPctGrowthPct', unit: '%', min: -100, max: 100, step: 5 },
+          { key: 'trend_white', label: 'White', trendField: 'whitePctGrowthPct', unit: '%', min: -100, max: 100, step: 5 },
+          { key: 'trend_black', label: 'Black', trendField: 'blackPctGrowthPct', unit: '%', min: -100, max: 100, step: 5 },
+          { key: 'trend_asian', label: 'Asian', trendField: 'asianPctGrowthPct', unit: '%', min: -100, max: 100, step: 5 },
+        ]
+      },
+      {
+        key: 'trend_housing',
+        label: 'Housing',
+        expanded: false,
+        metrics: [
+          { key: 'trend_homeValue', label: 'Median Home Value', trendField: 'medianHomeValueGrowthPct', unit: '%', min: -500, max: 500, step: 25 },
+          { key: 'trend_rent', label: 'Median Rent', trendField: 'medianRentGrowthPct', unit: '%', min: -500, max: 500, step: 25 },
+          { key: 'trend_homeownership', label: 'Homeownership Rate', trendField: 'homeownershipRateGrowthPct', unit: '%', min: -100, max: 100, step: 5 },
+        ]
+      },
+      {
+        key: 'trend_classification',
+        label: 'Classification',
+        expanded: false,
+        metrics: [
+          { key: 'trend_urbanIndex', label: 'Urbanization Index', trendField: 'urbanizationIndexGrowthPct', unit: '%', min: -100, max: 100, step: 5 },
+        ]
+      },
+    ];
+
+    // Initialize trend filter values to full range
+    this.trendCategories.forEach(cat => {
+      cat.metrics.forEach(metric => {
+        this.trendFilterValues.set(metric.key, { min: metric.min, max: metric.max });
       });
     });
   }
@@ -635,6 +747,10 @@ export class MapComponent implements OnInit, AfterViewInit {
   onYearChange(): void {
     this.loadCitiesForYear();
     this.loadTexasStats(this.selectedYear);
+    // Reload trends if enabled (since the current year changed)
+    if (this.trendEnabled) {
+      this.loadTrendData();
+    }
   }
 
   private loadTexasStats(year: number): void {
@@ -745,6 +861,148 @@ export class MapComponent implements OnInit, AfterViewInit {
     return ds?.classification || 'Rural';
   }
 
+  // ============================================================
+  // TREND FILTERING
+  // ============================================================
+
+  // Toggle the entire trends section on/off
+  toggleTrends(): void {
+    this.trendEnabled = !this.trendEnabled;
+    if (this.trendEnabled && this.trendData.size === 0) {
+      this.loadTrendData();
+    } else if (!this.trendEnabled) {
+      // Clear all trend filters when disabled
+      this.activeTrendFilters.clear();
+      this.trendCategories.forEach(cat => {
+        cat.metrics.forEach(m => {
+          this.trendFilterValues.set(m.key, { min: m.min, max: m.max });
+        });
+      });
+      this.applyFilters();
+    }
+  }
+
+  // Load trend data from backend
+  loadTrendData(): void {
+    this.trendLoading = true;
+    this.cityService.getTrends(this.selectedYear, this.trendBaseYear).subscribe({
+      next: (trends) => {
+        this.trendData.clear();
+        trends.forEach(t => this.trendData.set(t.geoid, t));
+        console.log('Loaded trend data:', trends.length, 'cities,', this.trendBaseYear, '→', this.selectedYear);
+        this.trendLoading = false;
+
+        // Auto-calibrate slider ranges from actual data
+        this.calibrateTrendRanges();
+        this.applyFilters();
+      },
+      error: (err: Error) => {
+        console.error('Error loading trends:', err);
+        this.trendLoading = false;
+      }
+    });
+  }
+
+  // Auto-calibrate trend slider ranges based on actual data
+  private calibrateTrendRanges(): void {
+    // Ranges are fixed (±100 or ±500) — just reset filter values to full range
+    this.trendCategories.forEach(cat => {
+      cat.metrics.forEach(metric => {
+        this.trendFilterValues.set(metric.key, { min: metric.min, max: metric.max });
+      });
+    });
+    // Clear any active trend filters since data changed
+    this.activeTrendFilters.clear();
+  }
+
+  // Change the base year for trend comparison
+  onTrendBaseYearChange(): void {
+    if (this.trendEnabled) {
+      this.loadTrendData();
+    }
+  }
+
+  // Handle trend slider change with debounce
+  onTrendFilterChange(metric: TrendMetric): void {
+    if (this.trendDebounceTimer) {
+      clearTimeout(this.trendDebounceTimer);
+    }
+
+    this.trendDebounceTimer = setTimeout(() => {
+      const values = this.trendFilterValues.get(metric.key);
+      if (!values) return;
+
+      const isDefault = values.min === metric.min && values.max === metric.max;
+
+      if (isDefault) {
+        this.activeTrendFilters.delete(metric.key);
+      } else {
+        this.activeTrendFilters.set(metric.key, {
+          metricKey: metric.key,
+          min: values.min,
+          max: values.max
+        });
+      }
+
+      this.applyFilters();
+    }, 150);
+  }
+
+  // Get trend filter values
+  getTrendFilterMin(metric: TrendMetric): number {
+    return this.trendFilterValues.get(metric.key)?.min ?? metric.min;
+  }
+
+  getTrendFilterMax(metric: TrendMetric): number {
+    return this.trendFilterValues.get(metric.key)?.max ?? metric.max;
+  }
+
+  // Set trend filter min
+  setTrendFilterMin(metric: TrendMetric, value: number): void {
+    const current = this.trendFilterValues.get(metric.key) || { min: metric.min, max: metric.max };
+    current.min = Math.max(metric.min, Math.min(value, current.max - metric.step));
+    this.trendFilterValues.set(metric.key, current);
+    this.onTrendFilterChange(metric);
+  }
+
+  // Set trend filter max
+  setTrendFilterMax(metric: TrendMetric, value: number): void {
+    const current = this.trendFilterValues.get(metric.key) || { min: metric.min, max: metric.max };
+    current.max = Math.min(metric.max, Math.max(value, current.min + metric.step));
+    this.trendFilterValues.set(metric.key, current);
+    this.onTrendFilterChange(metric);
+  }
+
+  // Clear a single trend filter
+  clearTrendFilter(metric: TrendMetric): void {
+    this.activeTrendFilters.delete(metric.key);
+    this.trendFilterValues.set(metric.key, { min: metric.min, max: metric.max });
+    this.applyFilters();
+  }
+
+  // Check if a trend filter is active (not at default)
+  isTrendFilterActive(metric: TrendMetric): boolean {
+    return this.activeTrendFilters.has(metric.key);
+  }
+
+  // Get active trend filter count for a category
+  getActiveTrendFilterCount(category: TrendCategory): number {
+    return category.metrics.filter(m => this.activeTrendFilters.has(m.key)).length;
+  }
+
+  // Format trend value for display
+  formatTrendValue(value: number, metric: TrendMetric): string {
+    const sign = value > 0 ? '+' : '';
+    return sign + value.toFixed(0) + '%';
+  }
+
+  // Get the trend value for a city
+  getCityTrendValue(city: City, metric: TrendMetric): number | null {
+    const trend = this.trendData.get(city.geoid);
+    if (!trend) return null;
+    return (trend as any)[metric.trendField] as number | null;
+  }
+
   // Toggle list panel
   toggleListPanel(): void {
     this.showListPanel = !this.showListPanel;
@@ -818,6 +1076,27 @@ export class MapComponent implements OnInit, AfterViewInit {
         return value >= filter.min && value <= filter.max;
       });
     });
+
+    // Apply trend filters
+    if (this.trendEnabled && this.activeTrendFilters.size > 0) {
+      this.activeTrendFilters.forEach((filter, filterKey) => {
+        // Find the trend metric definition
+        let trendMetric: TrendMetric | null = null;
+        for (const cat of this.trendCategories) {
+          const found = cat.metrics.find(m => m.key === filterKey);
+          if (found) { trendMetric = found; break; }
+        }
+        if (!trendMetric) return;
+
+        filtered = filtered.filter(city => {
+          const trend = this.trendData.get(city.geoid);
+          if (!trend) return false; // no trend data = exclude
+          const value = (trend as any)[trendMetric!.trendField] as number | null;
+          if (value == null) return false;
+          return value >= filter.min && value <= filter.max;
+        });
+      });
+    }
     
     this.filteredCities = filtered;
     this.filteredCount = filtered.length;
@@ -1433,18 +1712,26 @@ export class MapComponent implements OnInit, AfterViewInit {
   }
 
   getTotalFilterCount(): number {
-    return this.activeFilters.size + this.classificationFilters.size;
+    return this.activeFilters.size + this.classificationFilters.size + this.activeTrendFilters.size;
   }
 
   // Clear all filters
   clearAllFilters(): void {
     this.activeFilters.clear();
     this.classificationFilters.clear();
+    this.activeTrendFilters.clear();
     
     // Reset all filter values to defaults
     this.filterCategories.forEach(cat => {
       cat.metrics.forEach(metric => {
         this.filterValues.set(metric.key, { min: metric.min, max: metric.max });
+      });
+    });
+
+    // Reset trend filter values to defaults
+    this.trendCategories.forEach(cat => {
+      cat.metrics.forEach(metric => {
+        this.trendFilterValues.set(metric.key, { min: metric.min, max: metric.max });
       });
     });
     

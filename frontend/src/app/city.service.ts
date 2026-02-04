@@ -15,6 +15,34 @@ export interface DerivedStats {
   incomeRatioScore: number;
 }
 
+export interface CityTrend {
+  geoid: string;
+  name: string;
+  currentYear: number;
+  baseYear: number;
+  populationGrowthPct: number | null;
+  medianAgeGrowthPct: number | null;
+  medianIncomeGrowthPct: number | null;
+  perCapitaIncomeGrowthPct: number | null;
+  medianHomeValueGrowthPct: number | null;
+  medianRentGrowthPct: number | null;
+  homeownershipRateGrowthPct: number | null;
+  unemploymentRateGrowthPct: number | null;
+  laborForceParticipationGrowthPct: number | null;
+  workFromHomePctGrowthPct: number | null;
+  malePctGrowthPct: number | null;
+  femalePctGrowthPct: number | null;
+  whitePctGrowthPct: number | null;
+  blackPctGrowthPct: number | null;
+  asianPctGrowthPct: number | null;
+  nativeAmericanPctGrowthPct: number | null;
+  pacificIslanderPctGrowthPct: number | null;
+  twoOrMoreRacesPctGrowthPct: number | null;
+  otherRacePctGrowthPct: number | null;
+  hispanicPctGrowthPct: number | null;
+  urbanizationIndexGrowthPct: number | null;
+}
+
 @Injectable({
   providedIn: 'root'
 })
@@ -82,5 +110,10 @@ export class CityService {
   // Get derived stats history for a single city
   getDerivedHistory(geoid: string): Observable<DerivedStats[]> {
     return this.http.get<DerivedStats[]>(`https://texasexplorer-production.up.railway.app/api/derived/history/${geoid}`);
+  }
+
+  // Get trend data comparing two years
+  getTrends(currentYear: number, baseYear: number): Observable<CityTrend[]> {
+    return this.http.get<CityTrend[]>(`https://texasexplorer-production.up.railway.app/api/derived/trends?current=${currentYear}&base=${baseYear}`);
   }
 }

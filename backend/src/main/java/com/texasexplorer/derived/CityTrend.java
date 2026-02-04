@@ -52,6 +52,9 @@ public class CityTrend {
     // Classification
     private Double urbanizationIndexGrowthPct;
 
+    // Diversity
+    private Double diversityIndexGrowthPct;
+
     // ============================================================
     // CONSTRUCTORS
     // ============================================================
@@ -151,4 +154,8 @@ public class CityTrend {
     // Classification
     public Double getUrbanizationIndexGrowthPct() { return urbanizationIndexGrowthPct; }
     public void setUrbanizationIndexGrowthPct(Double urbanizationIndexGrowthPct) { this.urbanizationIndexGrowthPct = urbanizationIndexGrowthPct; }
+
+    // Diversity
+    public Double getDiversityIndexGrowthPct() { return diversityIndexGrowthPct; }
+    public void setDiversityIndexGrowthPct(Double diversityIndexGrowthPct) { this.diversityIndexGrowthPct = diversityIndexGrowthPct; }
 }
