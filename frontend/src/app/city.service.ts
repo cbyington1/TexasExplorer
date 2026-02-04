@@ -13,6 +13,7 @@ export interface DerivedStats {
   densityScore: number;
   proximityScore: number;
   incomeRatioScore: number;
+  diversityIndex: number;
 }
 
 export interface CityTrend {
@@ -41,6 +42,7 @@ export interface CityTrend {
   otherRacePctGrowthPct: number | null;
   hispanicPctGrowthPct: number | null;
   urbanizationIndexGrowthPct: number | null;
+  diversityIndexGrowthPct: number | null;
 }
 
 @Injectable({

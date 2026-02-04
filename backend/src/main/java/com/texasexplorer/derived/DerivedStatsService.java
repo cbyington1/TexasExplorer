@@ -120,23 +120,30 @@ public class DerivedStatsService {
         return results;
     }
 
-    
-     @Transactional
+    /**
+     * Recalculate for a year (delete existing first).
+     */
+    @Transactional
     public List<DerivedStats> recalculateForYear(Integer year) {
         derivedStatsRepository.deleteAllByYear(year);
+        derivedStatsRepository.flush();
         return calculateAndSaveForYear(year);
     }
 
+    /**
+     * Recalculate all years.
+     */
     @Transactional
     public void recalculateAll() {
         List<Integer> years = cityRepository.findAllYears();
         log("Recalculating derived stats for " + years.size() + " years");
         for (Integer year : years) {
             derivedStatsRepository.deleteAllByYear(year);
+            derivedStatsRepository.flush();
             calculateAndSaveForYear(year);
         }
     }
-    
+
     // ============================================================
     // REGIONAL DOMINANCE DETECTION
     // A city is "regionally dominant" if it's the largest city
@@ -282,46 +289,82 @@ public class DerivedStatsService {
     // Simpson's Diversity Index: 1 - Σ(p_i²)
     // where p_i is each racial group's proportion of total population.
     // Normalized to 0-100 scale.
-    // 0 = completely homogeneous, ~85 = maximally diverse
-    // We scale by dividing by theoretical max to get 0-100.
+    //
+    // Handles missing data gracefully:
+    //   - Only includes groups with non-null, non-zero counts
+    //   - Requires known groups to cover ≥90% of total population
+    //   - Normalizes proportions to known total (not full population)
+    //     so missing minority groups don't inflate the dominant group
+    //   - If coverage < 90%, sets null (insufficient data)
+    //   - Scales by theoretical max for the number of groups present
     // ============================================================
 
     private void computeDiversityIndex(DerivedStats ds, City city) {
         if (city.getPopulation() == null || city.getPopulation() == 0) {
-            ds.setDiversityIndex(0.0);
+            ds.setDiversityIndex(null);
             return;
         }
 
         double pop = city.getPopulation();
 
-        // Get each racial group's proportion
-        double[] proportions = {
-            safeInt(city.getWhitePopulation()) / pop,
-            safeInt(city.getBlackPopulation()) / pop,
-            safeInt(city.getAsianPopulation()) / pop,
-            safeInt(city.getNativeAmericanPopulation()) / pop,
-            safeInt(city.getPacificIslanderPopulation()) / pop,
-            safeInt(city.getTwoOrMoreRacesPopulation()) / pop,
-            safeInt(city.getOtherRacePopulation()) / pop,
-            safeInt(city.getHispanicPopulation()) / pop,
+        // Collect raw counts — only groups with actual data
+        Integer[] rawCounts = {
+            city.getWhitePopulation(),
+            city.getBlackPopulation(),
+            city.getAsianPopulation(),
+            city.getNativeAmericanPopulation(),
+            city.getPacificIslanderPopulation(),
+            city.getTwoOrMoreRacesPopulation(),
+            city.getOtherRacePopulation(),
+            city.getHispanicPopulation(),
         };
 
-        // Simpson's: 1 - Σ(p_i²)
+        // Sum known groups and count how many we have
+        double knownTotal = 0.0;
+        int groupCount = 0;
+        List<Double> knownCounts = new ArrayList<>();
+
+        for (Integer raw : rawCounts) {
+            if (raw != null && raw > 0) {
+                knownTotal += raw;
+                knownCounts.add((double) raw);
+                groupCount++;
+            }
+        }
+
+        // Need at least 2 groups to have any diversity
+        if (groupCount < 2) {
+            ds.setDiversityIndex(null);
+            return;
+        }
+
+        // Coverage check: known groups must account for ≥90% of population
+        double coverage = knownTotal / pop;
+        if (coverage < 0.90) {
+            ds.setDiversityIndex(null);
+            return;
+        }
+
+        // Normalize proportions to known total (not full population)
+        // This prevents missing minority groups from inflating the dominant group
         double sumSquares = 0.0;
-        for (double p : proportions) {
+        for (double count : knownCounts) {
+            double p = count / knownTotal;
             sumSquares += p * p;
         }
+
         double simpson = 1.0 - sumSquares;
 
-        // Theoretical max for 8 groups = 1 - 8*(1/8)² = 0.875
-        // Normalize to 0-100
-        double normalized = (simpson / 0.875) * 100.0;
-        ds.setDiversityIndex(round2(clamp(normalized)));
-    }
+        // Theoretical max depends on number of groups present:
+        // max = 1 - n * (1/n)² = 1 - 1/n = (n-1)/n
+        double theoreticalMax = (double)(groupCount - 1) / groupCount;
 
-    /** Safe integer extraction — null becomes 0. */
-    private double safeInt(Integer val) {
-        return val != null ? val.doubleValue() : 0.0;
+        // Normalize to 0-100
+        double normalized = (theoreticalMax > 0)
+            ? (simpson / theoreticalMax) * 100.0
+            : 0.0;
+
+        ds.setDiversityIndex(round2(clamp(normalized)));
     }
 
     // ============================================================

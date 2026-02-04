@@ -154,6 +154,9 @@ export class MapComponent implements OnInit, AfterViewInit {
 
     // Classification - urbanization index from backend
     { key: 'urbanIndex', label: 'Urbanization Index', category: 'Classification', getValue: (c) => this.getUrbanizationIndex(c), format: (v) => v?.toFixed(1) + ' / 100', yFormat: (v) => v?.toFixed(0) },
+
+    // Diversity - Simpson's diversity index from backend
+    { key: 'diversityIndex', label: 'Diversity Index', category: 'Diversity', getValue: (c) => this.getDiversityIndex(c), format: (v) => v?.toFixed(1) + ' / 100', yFormat: (v) => v?.toFixed(0) },
   ];
 
   // ============ NEW: Mobile state ============
@@ -598,6 +601,7 @@ export class MapComponent implements OnInit, AfterViewInit {
           { key: 'pacificIslanderPct', label: 'Pacific Islander', type: 'percent', field: 'pacificIslanderPopulation', percentOf: 'population', min: 0, max: 100, step: 1 },
           { key: 'twoOrMorePct', label: 'Two or More Races', type: 'percent', field: 'twoOrMoreRacesPopulation', percentOf: 'population', min: 0, max: 100, step: 1 },
           { key: 'otherRacePct', label: 'Other Race', type: 'percent', field: 'otherRacePopulation', percentOf: 'population', min: 0, max: 100, step: 1 },
+          { key: 'diversityIndex', label: 'Diversity Index', type: 'raw', field: 'population' as any, min: 0, max: 100, step: 1 },
         ]
       },
       {
@@ -661,6 +665,7 @@ export class MapComponent implements OnInit, AfterViewInit {
         expanded: false,
         metrics: [
           { key: 'trend_urbanIndex', label: 'Urbanization Index', trendField: 'urbanizationIndexGrowthPct', unit: '%', min: -100, max: 100, step: 5 },
+          { key: 'trend_diversityIndex', label: 'Diversity Index', trendField: 'diversityIndexGrowthPct', unit: '%', min: -100, max: 100, step: 5 },
         ]
       },
     ];
@@ -810,6 +815,10 @@ export class MapComponent implements OnInit, AfterViewInit {
     // Special case: computed urbanization index from backend
     if (metric.key === 'urbanIndex') {
       return this.getUrbanizationIndex(city) ?? 0;
+    }
+    // Special case: computed diversity index from backend
+    if (metric.key === 'diversityIndex') {
+      return this.getDiversityIndex(city) ?? 0;
     }
 
     const rawValue = city[metric.field] as number;
@@ -1903,6 +1912,12 @@ export class MapComponent implements OnInit, AfterViewInit {
     return ds?.urbanizationIndex ?? null;
   }
 
+  getDiversityIndex(city: City): number | null {
+    if (!city.geoid) return null;
+    const ds = this.derivedStatsMap.get(city.geoid);
+    return ds?.diversityIndex ?? null;
+  }
+
   // City Classification — from backend
   private updateCityClassification(): void {
     if (!this.selectedCity) {
@@ -2015,6 +2030,7 @@ export class MapComponent implements OnInit, AfterViewInit {
       nativeAmericanPct: '#8e44ad', pacificIslanderPct: '#1abc9c', twoOrMorePct: '#f39c12', otherRacePct: '#7f8c8d',
       hispanicPct: '#e67e22',
       urbanIndex: '#2c3e50',
+      diversityIndex: '#e74c3c',
     };
     return colors[key] || '#3498db';
   }
@@ -2027,8 +2043,8 @@ export class MapComponent implements OnInit, AfterViewInit {
     const years = this.historyData.map(d => d.year);
 
     this.historyMetrics.forEach(metric => {
-      // Skip urbanization index for Texas overall (no meaningful city-level data)
-      if (metric.key === 'urbanIndex' && !this.selectedCity) return;
+      // Skip urbanization/diversity index for Texas overall (no meaningful city-level data)
+      if ((metric.key === 'urbanIndex' || metric.key === 'diversityIndex') && !this.selectedCity) return;
 
       const canvas = document.getElementById('chart-' + metric.key) as HTMLCanvasElement;
       if (!canvas) return;
@@ -2036,12 +2052,15 @@ export class MapComponent implements OnInit, AfterViewInit {
       const ctx = canvas.getContext('2d');
       if (!ctx) return;
 
-      // For urbanization index, use derived history data from backend
+      // For derived stats (urbanization/diversity index), use derived history data from backend
       let data: (number | null)[];
       let chartYears: number[];
       if (metric.key === 'urbanIndex' && this.derivedHistoryData.length > 0) {
         chartYears = this.derivedHistoryData.map(d => d.year);
         data = this.derivedHistoryData.map(d => d.urbanizationIndex);
+      } else if (metric.key === 'diversityIndex' && this.derivedHistoryData.length > 0) {
+        chartYears = this.derivedHistoryData.map(d => d.year);
+        data = this.derivedHistoryData.map(d => d.diversityIndex);
       } else {
         chartYears = years;
         data = this.historyData.map(d => metric.getValue(d));
@@ -2165,6 +2184,18 @@ export class MapComponent implements OnInit, AfterViewInit {
     if (metric.key === 'urbanIndex' && this.derivedHistoryData.length >= 2) {
       const first = this.derivedHistoryData[0].urbanizationIndex;
       const last = this.derivedHistoryData[this.derivedHistoryData.length - 1].urbanizationIndex;
+      if (!first || !last) return null;
+      const change = ((last - first) / Math.abs(first)) * 100;
+      return {
+        value: (change >= 0 ? '+' : '') + change.toFixed(1) + '%',
+        positive: change >= 0
+      };
+    }
+
+    // For diversity index, use derived history data
+    if (metric.key === 'diversityIndex' && this.derivedHistoryData.length >= 2) {
+      const first = this.derivedHistoryData[0].diversityIndex;
+      const last = this.derivedHistoryData[this.derivedHistoryData.length - 1].diversityIndex;
       if (!first || !last) return null;
       const change = ((last - first) / Math.abs(first)) * 100;
       return {

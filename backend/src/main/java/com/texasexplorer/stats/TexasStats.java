@@ -87,6 +87,9 @@ public class TexasStats {
     private Long workFromHome;
     private Long driveAlone;
     private Long publicTransit;
+
+    // Diversity
+    private Double diversityIndex;
     
     // Constructors
     public TexasStats() {}
@@ -257,4 +260,7 @@ public class TexasStats {
     
     public Long getPublicTransit() { return publicTransit; }
     public void setPublicTransit(Long publicTransit) { this.publicTransit = publicTransit; }
+
+    public Double getDiversityIndex() { return diversityIndex; }
+    public void setDiversityIndex(Double diversityIndex) { this.diversityIndex = diversityIndex; }
 }

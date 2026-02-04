@@ -20,6 +20,9 @@ public class AdminController {
     @Autowired
     private CityService cityService;
 
+    @Autowired
+    private com.texasexplorer.stats.TexasStatsService texasStatsService;
+
     //Manually trigger update
     @GetMapping("/update-data")
     public ResponseEntity<Map<String, Object>> triggerDataUpdate() {
@@ -98,5 +101,15 @@ public class AdminController {
         response.put("timestamp", LocalDateTime.now().toString());
         response.put("service", "Texas Explorer API");
         return ResponseEntity.ok(response);
+    }
+
+    // Recalculate Texas-wide stats for all years (e.g. after adding diversity index)
+    @PostMapping("/recalculate-texas-stats")
+    public ResponseEntity<String> recalculateTexasStats() {
+        var years = cityService.getAvailableYears();
+        for (Integer year : years) {
+            texasStatsService.recalculateStatsForYear(year);
+        }
+        return ResponseEntity.ok("Recalculated Texas stats for " + years.size() + " years");
     }
 }

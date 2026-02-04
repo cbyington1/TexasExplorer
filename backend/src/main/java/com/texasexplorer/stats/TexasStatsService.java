@@ -257,6 +257,28 @@ public class TexasStatsService {
         stats.setWorkFromHome(totalWFH);
         stats.setDriveAlone(totalDrive);
         stats.setPublicTransit(totalTransit);
+
+        // Diversity Index — Simpson's on statewide race totals
+        // Same logic as city-level: normalize to known total, require 90% coverage
+        long[] raceCounts = { totalWhite, totalBlack, totalAsian, totalNativeAm,
+                              totalPacific, totalTwoPlus, totalOther, totalHispanic };
+        double knownRaceTotal = 0;
+        int raceGroups = 0;
+        for (long c : raceCounts) {
+            if (c > 0) { knownRaceTotal += c; raceGroups++; }
+        }
+        if (raceGroups >= 2 && knownRaceTotal >= totalPopulation * 0.90) {
+            double sumSq = 0;
+            for (long c : raceCounts) {
+                if (c > 0) {
+                    double p = c / knownRaceTotal;
+                    sumSq += p * p;
+                }
+            }
+            double simpson = 1.0 - sumSq;
+            double maxDiv = (double)(raceGroups - 1) / raceGroups;
+            stats.setDiversityIndex(Math.round((simpson / maxDiv) * 10000.0) / 100.0);
+        }
         
         // Save to database
         TexasStats saved = texasStatsRepository.save(stats);
