@@ -2,10 +2,14 @@ package com.texasexplorer.stats;
 
 import com.texasexplorer.City;
 import com.texasexplorer.CityService;
+import com.texasexplorer.derived.DerivedStats;
+import com.texasexplorer.derived.DerivedStatsService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 @Service
 public class TexasStatsService {
@@ -15,6 +19,9 @@ public class TexasStatsService {
     
     @Autowired
     private TexasStatsRepository texasStatsRepository;
+
+    @Autowired
+    private DerivedStatsService derivedStatsService;
 
     /**
      * Get stats for a specific year - checks database first, calculates if missing
@@ -279,10 +286,69 @@ public class TexasStatsService {
             double maxDiv = (double)(raceGroups - 1) / raceGroups;
             stats.setDiversityIndex(Math.round((simpson / maxDiv) * 10000.0) / 100.0);
         }
+
+        // ============================================================
+        // URBANIZATION BREAKDOWN
+        // Pull derived stats for this year, compute population by classification
+        // and population-weighted average urbanization index
+        // ============================================================
+        List<DerivedStats> derivedList = derivedStatsService.getStatsForYear(year);
+        
+        // Build geoid -> DerivedStats lookup
+        Map<String, DerivedStats> derivedMap = new HashMap<>();
+        for (DerivedStats ds : derivedList) {
+            derivedMap.put(ds.getGeoid(), ds);
+        }
+
+        long urbanPop = 0;
+        long suburbanPop = 0;
+        long ruralPop = 0;
+        double weightedIndexSum = 0;
+        long popWithIndex = 0;
+
+        for (City city : cities) {
+            if (city.getGeoid() == null || city.getPopulation() == null) continue;
+            int pop = city.getPopulation();
+            
+            DerivedStats ds = derivedMap.get(city.getGeoid());
+            if (ds == null) continue;
+
+            // Sum population by classification
+            String classification = ds.getClassification();
+            if ("Urban".equals(classification)) {
+                urbanPop += pop;
+            } else if ("Suburban".equals(classification)) {
+                suburbanPop += pop;
+            } else {
+                ruralPop += pop;
+            }
+
+            // Weighted urbanization index
+            if (ds.getUrbanizationIndex() != null) {
+                weightedIndexSum += ds.getUrbanizationIndex() * pop;
+                popWithIndex += pop;
+            }
+        }
+
+        // Set urbanization percentages
+        if (totalPopulation > 0) {
+            stats.setUrbanPopulationPct(Math.round((double) urbanPop / totalPopulation * 10000.0) / 100.0);
+            stats.setSuburbanPopulationPct(Math.round((double) suburbanPop / totalPopulation * 10000.0) / 100.0);
+            stats.setRuralPopulationPct(Math.round((double) ruralPop / totalPopulation * 10000.0) / 100.0);
+        }
+
+        // Set weighted urbanization index
+        if (popWithIndex > 0) {
+            stats.setWeightedUrbanizationIndex(Math.round(weightedIndexSum / popWithIndex * 100.0) / 100.0);
+        }
         
         // Save to database
         TexasStats saved = texasStatsRepository.save(stats);
-        System.out.println("Saved Texas stats for year " + year + " - Population: " + totalPopulation);
+        System.out.println("Saved Texas stats for year " + year + " - Population: " + totalPopulation 
+            + " | Urban: " + stats.getUrbanPopulationPct() + "%" 
+            + " | Suburban: " + stats.getSuburbanPopulationPct() + "%"
+            + " | Rural: " + stats.getRuralPopulationPct() + "%"
+            + " | WeightedIndex: " + stats.getWeightedUrbanizationIndex());
         
         return saved;
     }

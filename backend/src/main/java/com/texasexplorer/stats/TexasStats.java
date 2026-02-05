@@ -90,6 +90,12 @@ public class TexasStats {
 
     // Diversity
     private Double diversityIndex;
+
+    // Urbanization breakdown
+    private Double urbanPopulationPct;
+    private Double suburbanPopulationPct;
+    private Double ruralPopulationPct;
+    private Double weightedUrbanizationIndex;
     
     // Constructors
     public TexasStats() {}
@@ -195,11 +201,11 @@ public class TexasStats {
     public Long getIncome25kTo50k() { return income25kTo50k; }
     public void setIncome25kTo50k(Long income25kTo50k) { this.income25kTo50k = income25kTo50k; }
     
-    public Long getIncome50kTo100k() { return income50kTo100k; }
-    public void setIncome50kTo100k(Long income50kTo100k) { this.income50kTo100k = income50kTo100k; }
-    
     public Long getIncome100kTo200k() { return income100kTo200k; }
     public void setIncome100kTo200k(Long income100kTo200k) { this.income100kTo200k = income100kTo200k; }
+    
+    public Long getIncome50kTo100k() { return income50kTo100k; }
+    public void setIncome50kTo100k(Long income50kTo100k) { this.income50kTo100k = income50kTo100k; }
     
     public Long getIncome200kPlus() { return income200kPlus; }
     public void setIncome200kPlus(Long income200kPlus) { this.income200kPlus = income200kPlus; }
@@ -263,4 +269,16 @@ public class TexasStats {
 
     public Double getDiversityIndex() { return diversityIndex; }
     public void setDiversityIndex(Double diversityIndex) { this.diversityIndex = diversityIndex; }
+
+    public Double getUrbanPopulationPct() { return urbanPopulationPct; }
+    public void setUrbanPopulationPct(Double urbanPopulationPct) { this.urbanPopulationPct = urbanPopulationPct; }
+
+    public Double getSuburbanPopulationPct() { return suburbanPopulationPct; }
+    public void setSuburbanPopulationPct(Double suburbanPopulationPct) { this.suburbanPopulationPct = suburbanPopulationPct; }
+
+    public Double getRuralPopulationPct() { return ruralPopulationPct; }
+    public void setRuralPopulationPct(Double ruralPopulationPct) { this.ruralPopulationPct = ruralPopulationPct; }
+
+    public Double getWeightedUrbanizationIndex() { return weightedUrbanizationIndex; }
+    public void setWeightedUrbanizationIndex(Double weightedUrbanizationIndex) { this.weightedUrbanizationIndex = weightedUrbanizationIndex; }
 }
