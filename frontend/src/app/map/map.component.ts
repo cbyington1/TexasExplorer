@@ -153,10 +153,16 @@ export class MapComponent implements OnInit, AfterViewInit {
     { key: 'hispanicPct', label: 'Hispanic/Latino', category: 'Ethnicity', getValue: (c) => (c.hispanicPopulation && c.population > 0) ? (c.hispanicPopulation / c.population) * 100 : null, format: (v) => v?.toFixed(1) + '%', yFormat: (v) => v?.toFixed(0) + '%' },
 
     // Classification - urbanization index from backend
-    { key: 'urbanIndex', label: 'Urbanization Index', category: 'Classification', getValue: (c) => this.getUrbanizationIndex(c), format: (v) => v?.toFixed(1) + ' / 100', yFormat: (v) => v?.toFixed(0) },
+    // Classification - urbanization index from backend
+    { key: 'urbanIndex', label: 'Urbanization Index', category: 'Classification', 
+      getValue: (c) => (c as any)._texasUrbanizationIndex ?? this.getUrbanizationIndex(c), 
+      format: (v) => v?.toFixed(1) + ' / 100', yFormat: (v) => v?.toFixed(0) },
 
     // Diversity - Simpson's diversity index from backend
-    { key: 'diversityIndex', label: 'Diversity Index', category: 'Diversity', getValue: (c) => this.getDiversityIndex(c), format: (v) => v?.toFixed(1) + ' / 100', yFormat: (v) => v?.toFixed(0) },
+    // Diversity - Simpson's diversity index from backend
+    { key: 'diversityIndex', label: 'Diversity Index', category: 'Diversity', 
+      getValue: (c) => (c as any)._texasDiversityIndex ?? this.getDiversityIndex(c), 
+      format: (v) => v?.toFixed(1) + ' / 100', yFormat: (v) => v?.toFixed(0) },
   ];
 
   // ============ NEW: Mobile state ============
@@ -211,20 +217,20 @@ export class MapComponent implements OnInit, AfterViewInit {
     this.isMobile = window.innerWidth <= 768;
   }
 
-  // NEW: Toggle mobile card expanded state
   toggleMobileCard(): void {
     this.mobileCardExpanded = !this.mobileCardExpanded;
+    if (this.mobileCardExpanded) {
+      this.mobileFiltersOpen = false;
+    }
   }
 
-  // NEW: Toggle mobile filters panel
   toggleMobileFilters(): void {
     this.mobileFiltersOpen = !this.mobileFiltersOpen;
-    // Collapse card when opening filters
     if (this.mobileFiltersOpen) {
       this.mobileCardExpanded = false;
     }
   }
-
+  
   // NEW: Get balance slider value
   getBalanceValue(metric: FilterMetric): number {
     return this.balanceValues.get(metric.key) ?? 50;
@@ -687,21 +693,38 @@ export class MapComponent implements OnInit, AfterViewInit {
     // Start more zoomed in on mobile
     const initialZoom = this.isMobile ? 5 : 5.5;
 
-    this.map = L.map('map', {
-      center: [31.0, -100.0],
-      zoom: initialZoom,
-      minZoom: 5,
-      maxZoom: 12,
-      maxBounds: texasBounds,
-      maxBoundsViscosity: 1.0,
-      zoomControl: !this.isMobile, // Hide zoom buttons on mobile
-      dragging: true,
-      touchZoom: true,
-      scrollWheelZoom: true,
-      doubleClickZoom: true,
-      boxZoom: false,
-      keyboard: true
+    const mapOptions: any = {
+    center: [31.0, -100.0],
+    zoom: initialZoom,
+    minZoom: 5,
+    maxZoom: 12,
+    zoomControl: !this.isMobile,
+    dragging: true,
+    touchZoom: true,
+    scrollWheelZoom: true,
+    doubleClickZoom: true,
+    boxZoom: false,
+    keyboard: true,
+    bounceAtZoomLimits: false
+  };
+
+  // Only use maxBounds on desktop
+  if (!this.isMobile) {
+    mapOptions.maxBounds = texasBounds;
+    mapOptions.maxBoundsViscosity = 1.0;
+  }
+
+  this.map = L.map('map', mapOptions);
+
+  // Mobile: gently bring user back to Texas if they pan too far
+  if (this.isMobile) {
+    this.map.on('moveend', () => {
+      const center = this.map.getCenter();
+      if (center.lat < 24 || center.lat > 38 || center.lng < -108 || center.lng > -92) {
+        this.map.panTo([31.0, -100.0], { animate: true, duration: 0.5 });
+      }
     });
+  }
 
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       maxZoom: 18,
@@ -1972,38 +1995,45 @@ export class MapComponent implements OnInit, AfterViewInit {
   }
 
   // Convert texasStats response to City-shaped object for chart reuse
-  private texasStatsToCity(stats: any, year: number): City {
-    return {
-      year,
-      geoid: 'texas',
-      name: 'Texas',
-      population: stats.totalPopulation,
-      medianAge: stats.medianAge,
-      medianHouseholdIncome: stats.medianHouseholdIncome,
-      perCapitaIncome: stats.perCapitaIncome,
-      medianHomeValue: stats.medianHomeValue,
-      medianRent: stats.medianRent,
-      ownerOccupied: stats.ownerOccupied,
-      renterOccupied: stats.renterOccupied,
-      employed: stats.employed,
-      unemployed: stats.unemployed,
-      laborForce: stats.laborForce,
-      workFromHome: stats.workFromHome,
-      malePopulation: stats.totalMale,
-      femalePopulation: stats.totalFemale,
-      whitePopulation: stats.whitePopulation,
-      blackPopulation: stats.blackPopulation,
-      asianPopulation: stats.asianPopulation,
-      hispanicPopulation: stats.hispanicPopulation,
-      nativeAmericanPopulation: stats.nativeAmericanPopulation,
-      pacificIslanderPopulation: stats.pacificIslanderPopulation,
-      twoOrMoreRacesPopulation: stats.twoOrMoreRacesPopulation,
-      otherRacePopulation: stats.otherRacePopulation,
-      latitude: 31.0,
-      longitude: -100.0,
-      landAreaSqMi: 268596,
-    } as City;
-  }
+  // Convert texasStats response to City-shaped object for chart reuse
+private texasStatsToCity(stats: any, year: number): City {
+  const city = {
+    year,
+    geoid: 'texas',
+    name: 'Texas',
+    population: stats.totalPopulation,
+    medianAge: stats.medianAge,
+    medianHouseholdIncome: stats.medianHouseholdIncome,
+    perCapitaIncome: stats.perCapitaIncome,
+    medianHomeValue: stats.medianHomeValue,
+    medianRent: stats.medianRent,
+    ownerOccupied: stats.ownerOccupied,
+    renterOccupied: stats.renterOccupied,
+    employed: stats.employed,
+    unemployed: stats.unemployed,
+    laborForce: stats.laborForce,
+    workFromHome: stats.workFromHome,
+    malePopulation: stats.totalMale,
+    femalePopulation: stats.totalFemale,
+    whitePopulation: stats.whitePopulation,
+    blackPopulation: stats.blackPopulation,
+    asianPopulation: stats.asianPopulation,
+    hispanicPopulation: stats.hispanicPopulation,
+    nativeAmericanPopulation: stats.nativeAmericanPopulation,
+    pacificIslanderPopulation: stats.pacificIslanderPopulation,
+    twoOrMoreRacesPopulation: stats.twoOrMoreRacesPopulation,
+    otherRacePopulation: stats.otherRacePopulation,
+    latitude: 31.0,
+    longitude: -100.0,
+    landAreaSqMi: 268596,
+  } as City;
+  
+  // Attach Texas-specific derived stats directly to the object
+  (city as any)._texasDiversityIndex = stats.diversityIndex;
+  (city as any)._texasUrbanizationIndex = stats.weightedUrbanizationIndex;
+  
+  return city;
+}
 
   closeHistoryPanel(): void {
     this.showHistoryPanel = false;
@@ -2035,6 +2065,58 @@ export class MapComponent implements OnInit, AfterViewInit {
     return colors[key] || '#3498db';
   }
 
+    private getChartYMin(metricKey: string, data: (number | null)[]): number | undefined {
+    const fixedScaleMetrics = [
+      'diversityIndex', 'ownershipRate',
+      'whitePct', 'blackPct', 'asianPct', 'hispanicPct',
+      'nativeAmericanPct', 'pacificIslanderPct', 'twoOrMorePct', 'otherRacePct'
+    ];
+    
+    if (fixedScaleMetrics.includes(metricKey)) {
+      return 0;
+    }
+    
+    // Median Age: ensure at least 1 unit range with integer bounds
+    if (metricKey === 'medianAge') {
+      const validData = data.filter(d => d != null) as number[];
+      if (validData.length === 0) return undefined;
+      const min = Math.min(...validData);
+      const max = Math.max(...validData);
+      const range = max - min;
+      if (range < 1) {
+        return Math.floor(min);
+      }
+    }
+    
+    return undefined;
+  }
+
+  private getChartYMax(metricKey: string, data: (number | null)[]): number | undefined {
+    const fixedScaleMetrics = [
+      'diversityIndex', 'ownershipRate',
+      'whitePct', 'blackPct', 'asianPct', 'hispanicPct',
+      'nativeAmericanPct', 'pacificIslanderPct', 'twoOrMorePct', 'otherRacePct'
+    ];
+    
+    if (fixedScaleMetrics.includes(metricKey)) {
+      return 100;
+    }
+    
+    // Median Age: ensure at least 1 unit range with integer bounds
+    if (metricKey === 'medianAge') {
+      const validData = data.filter(d => d != null) as number[];
+      if (validData.length === 0) return undefined;
+      const min = Math.min(...validData);
+      const max = Math.max(...validData);
+      const range = max - min;
+      if (range < 1) {
+        return Math.ceil(max);
+      }
+    }
+    
+    return undefined;
+  }
+
   private createAllHistoryCharts(): void {
     this.destroyAllHistoryCharts();
     
@@ -2043,8 +2125,7 @@ export class MapComponent implements OnInit, AfterViewInit {
     const years = this.historyData.map(d => d.year);
 
     this.historyMetrics.forEach(metric => {
-      // Skip urbanization/diversity index for Texas overall (no meaningful city-level data)
-      if ((metric.key === 'urbanIndex' || metric.key === 'diversityIndex') && !this.selectedCity) return;
+      // DONT Skip urbanization/diversity index for Texas overall 
 
       const canvas = document.getElementById('chart-' + metric.key) as HTMLCanvasElement;
       if (!canvas) return;
@@ -2055,15 +2136,21 @@ export class MapComponent implements OnInit, AfterViewInit {
       // For derived stats (urbanization/diversity index), use derived history data from backend
       let data: (number | null)[];
       let chartYears: number[];
-      if (metric.key === 'urbanIndex' && this.derivedHistoryData.length > 0) {
+      if (metric.key === 'urbanIndex' && this.derivedHistoryData.length > 0 && this.selectedCity) {
         chartYears = this.derivedHistoryData.map(d => d.year);
         data = this.derivedHistoryData.map(d => d.urbanizationIndex);
-      } else if (metric.key === 'diversityIndex' && this.derivedHistoryData.length > 0) {
+      } else if (metric.key === 'diversityIndex' && this.derivedHistoryData.length > 0 && this.selectedCity) {
         chartYears = this.derivedHistoryData.map(d => d.year);
         data = this.derivedHistoryData.map(d => d.diversityIndex);
       } else {
         chartYears = years;
         data = this.historyData.map(d => metric.getValue(d));
+        if (metric.key === 'malePct') {
+  const validData = data.filter(d => d != null) as number[];
+  const min = Math.min(...validData);
+  const max = Math.max(...validData);
+  console.log('malePct data:', { min, max, range: max - min, yMin: this.getChartYMin(metric.key, data), yMax: this.getChartYMax(metric.key, data) });
+}
       }
 
       const color = this.getMetricColor(metric.key);
@@ -2154,16 +2241,20 @@ export class MapComponent implements OnInit, AfterViewInit {
               grid: { display: false },
               ticks: { font: { size: 11 }, color: '#6c757d' }
             },
-            y: {
-              min: isUrbanIndex ? 0 : undefined,
-              max: isUrbanIndex ? 100 : undefined,
-              grid: { color: isUrbanIndex ? 'transparent' : '#f0f0f0' },
-              ticks: {
-                font: { size: 11 },
-                color: '#6c757d',
-                callback: (value: number) => metric.yFormat(value)
-              }
+           y: {
+            min: isUrbanIndex ? 0 : this.getChartYMin(metric.key, data),
+            max: isUrbanIndex ? 100 : this.getChartYMax(metric.key, data),
+            grace: 0,
+            grid: { color: isUrbanIndex ? 'transparent' : '#f0f0f0' },
+            ticks: {
+              font: { size: 11 },
+              color: '#6c757d',
+              stepSize: metric.key === 'medianAge' ? 1 : undefined,
+              autoSkip: true,
+              maxTicksLimit: (metric.key === 'malePct' || metric.key === 'femalePct') ? 5 : undefined,
+              callback: (value: number) => metric.yFormat(value)
             }
+          }
           }
         }
       };

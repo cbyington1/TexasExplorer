@@ -489,9 +489,15 @@
 }
 
 .category-content {
-  padding: 12px 14px;
-  background: white;
-  border-top: 1px solid #e9ecef;
+  max-height: 0;
+  overflow: hidden;
+  opacity: 0;
+  transition: max-height 0.3s ease, opacity 0.2s ease;
+}
+
+.category-content.expanded {
+  max-height: 1000px;
+  opacity: 1;
 }
 
 .filter-metric {
@@ -1303,7 +1309,6 @@
 
 .mobile-category-content {
   padding: 12px;
-  background: white;
   border-top: 1px solid #e9ecef;
 }
 
@@ -1693,9 +1698,19 @@
    MOBILE MEDIA QUERY
    ================================ */
 @media (max-width: 768px) {
+  html, body {
+    touch-action: manipulation;
+    overscroll-behavior: none;
+  }
+
   .map-container {
     flex-direction: column;
-    position: relative;
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    overflow: hidden;
   }
 
   /* Hide desktop panels */
@@ -1704,7 +1719,7 @@
   .list-toggle-btn { display: none; }
   .list-panel { display: none; }
 
-  /* Map full screen with padding for card */
+  /* Map full screen */
   #map {
     position: absolute;
     top: 0;
@@ -1713,6 +1728,7 @@
     bottom: 0;
     width: 100%;
     height: 100%;
+    touch-action: none;
   }
 
   /* Show mobile card */
@@ -2053,17 +2069,45 @@
 }
 
 /* Mobile adjustments for history panel */
+/* Mobile adjustments for history panel */
 @media (max-width: 768px) {
   .history-panel {
     height: 95vh;
   }
 
   .history-panel-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
     padding: 16px;
+    position: sticky;
+    top: 0;
+    background: white;
+    z-index: 10;
+  }
+
+  .history-title {
+    flex: 1;
+    min-width: 0;
   }
 
   .history-title h2 {
     font-size: 1.2rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .history-close-btn {
+    flex-shrink: 0;
+    width: 40px;
+    height: 40px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #f0f0f0;
+    border-radius: 50%;
+    font-size: 1.3rem;
   }
 
   .history-panel-content {
@@ -2306,4 +2350,121 @@
   border-radius: 1px;
   z-index: 2;
   pointer-events: none;
+}
+
+/* ================================
+   MOBILE TOP CARD (Filters)
+   ================================ */
+
+.mobile-top-card {
+  display: none;
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  background: white;
+  border-radius: 0 0 16px 16px;
+  box-shadow: 0 2px 20px rgba(0,0,0,0.15);
+  z-index: 1000;
+  padding: 12px 16px 8px 16px;
+  transition: max-height 0.3s ease;
+  max-height: 100px;
+  overflow: hidden;
+}
+
+.mobile-top-card.expanded {
+  max-height: 75vh;
+  overflow-y: auto;
+}
+
+.mobile-top-card-header {
+  margin-bottom: 6px;
+}
+
+.mobile-top-title {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.mobile-top-title h3 {
+  margin: 0;
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: #2c3e50;
+}
+
+.mobile-year-select {
+  background: #3498db;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.mobile-top-card-preview {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.75rem;
+  color: #6c757d;
+  flex-wrap: wrap;
+}
+
+.preview-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.preview-label {
+  color: #6c757d;
+}
+
+.preview-value {
+  color: #2c3e50;
+  font-weight: 600;
+}
+
+.preview-divider {
+  color: #dee2e6;
+}
+
+.filters-badge {
+  background: #3498db;
+  color: white;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-weight: 600;
+  font-size: 0.7rem;
+}
+
+.mobile-top-card-content {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid #e9ecef;
+}
+
+.mobile-top-card-hint {
+  text-align: center;
+  font-size: 0.65rem;
+  color: #adb5bd;
+  margin-top: 6px;
+}
+
+.mobile-top-card-handle {
+  width: 32px;
+  height: 4px;
+  background: #d0d0d0;
+  border-radius: 2px;
+  margin: 6px auto 0 auto;
+}
+
+@media (max-width: 768px) {
+  .mobile-top-card {
+    display: block;
+  }
 }
